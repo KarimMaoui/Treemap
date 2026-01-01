@@ -174,11 +174,4 @@ if st.button('Lancer l\'analyse Tech', type="primary"):
             use_container_width=True
         )
     else:
-        st.error("Aucune donnée trouvée ou erreur API.")llées")
-            st.dataframe(
-                df.sort_values(by="P/E Ratio", ascending=True)
-                .style.format({"Market Cap": "${:,.0f}", "P/E Ratio": "{:.2f}"}),
-                use_container_width=True
-            )
-        else:
-            st.error("Aucune donnée récupérée. Vérifiez votre connexion internet.")
+        st.error("Aucune donnée trouvée ou erreur API.")
