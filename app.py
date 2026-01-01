@@ -4,19 +4,19 @@ import pandas as pd
 import plotly.express as px
 import time
 import requests
-import re
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V15", layout="wide")
+st.set_page_config(page_title="Global Screener V16", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V15 - Persistant)")
+st.title("🌍 Ultimate Global Screener (V16 - GARP Strategy)")
 st.markdown("""
-**Scan de Valorisation Mondiale & Analyse de Régression**
-* Les données restent en mémoire lors du filtrage par secteur.
+**Analyse "Growth At a Reasonable Price" (Croissance à prix raisonnable)**
+* **Onglet 1 (Value)** : Est-ce que l'action est chère par rapport à son passé ? (Treemap)
+* **Onglet 2 (Growth)** : Est-ce que la croissance justifie le prix ? (Scatter Plot P/E vs Growth)
 """)
 
-# --- 2. FONCTIONS DE SCRAPING ROBUSTE ---
+# --- 2. FONCTIONS DE SCRAPING ---
 
 def get_tickers_from_wikipedia(url, index_suffix=""):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
@@ -60,7 +60,6 @@ def get_top_tickers(index_name, limit):
     status.text(f"⏳ Récupération liste : {index_name}...")
     tickers = []
     
-    # Routage indices
     if index_name == "S&P 500 (USA)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", "")
         tickers = [t.replace('.', '-') for t in tickers]
@@ -113,6 +112,10 @@ def get_historical_valuation(ticker):
         info = stock.info
         currency = info.get('currency', 'USD')
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
+        
+        # --- NOUVEAU : Récupération de la croissance ---
+        growth = info.get('earningsGrowth', None) # C'est un % (ex: 0.15 pour 15%)
+        
         if fwd_pe is None: return None
 
         financials = stock.financials
@@ -140,6 +143,9 @@ def get_historical_valuation(ticker):
         
         valuation_diff = (fwd_pe - avg_hist_pe) / avg_hist_pe
         
+        # On convertit la croissance en pourcentage pour l'affichage (0.15 -> 15.0)
+        growth_percent = growth * 100 if growth is not None else None
+
         return {
             "Ticker": ticker,
             "Name": info.get('shortName', ticker),
@@ -147,6 +153,7 @@ def get_historical_valuation(ticker):
             "Market Cap": info.get('marketCap', 0),
             "Forward P/E": fwd_pe,
             "Avg Hist P/E": avg_hist_pe,
+            "Growth %": growth_percent,
             "Premium/Discount": valuation_diff * 100
         }
     except: return None
@@ -183,9 +190,8 @@ with c3:
     st.write(" ")
     btn = st.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True)
 
-# --- 5. LOGIQUE DE PERSISTANCE (SESSION STATE) ---
+# --- 5. LOGIQUE ---
 
-# Si le bouton est cliqué, on lance l'analyse et on SAUVEGARDE dans la session
 if btn:
     top = get_top_tickers(idx, nb)
     if top:
@@ -193,14 +199,10 @@ if btn:
         df_result = run_analysis(top)
         
         if not df_result.empty:
-            # NETTOYAGE VISUEL AVANT SAUVEGARDE
             for suffix in ['.PA', '.DE', '.L', '.TO', '.SW', '.NS']:
                 df_result['Ticker'] = df_result['Ticker'].astype(str).str.replace(suffix, '', regex=False)
             
-            # CALCUL MÉDIANES AVANT SAUVEGARDE
-            df_result['Sector Median P/E'] = df_result.groupby('Sector')['Forward P/E'].transform('median')
-            
-            # Sauvegarde dans la mémoire persistante
+            # Sauvegarde session
             st.session_state['data'] = df_result
             st.session_state['index_name'] = idx
         else:
@@ -208,7 +210,7 @@ if btn:
     else:
         st.error("Erreur liste.")
 
-# --- 6. AFFICHAGE (Basé sur la mémoire, pas sur le bouton) ---
+# --- 6. AFFICHAGE ---
 
 if 'data' in st.session_state:
     df = st.session_state['data']
@@ -216,85 +218,82 @@ if 'data' in st.session_state:
     
     st.divider()
     
-    tab1, tab2 = st.tabs(["🗺️ Treemap Globale", "📈 Régression & P/E"])
+    tab1, tab2 = st.tabs(["🗺️ Treemap (Value)", "🚀 Growth vs P/E (GARP)"])
     
     scale = ["#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"]
     
-    # --- TAB 1 : TREEMAP ---
+    # --- TAB 1 : TREEMAP (Pas de changement) ---
     with tab1:
         st.subheader(f"Carte Thermique : {current_idx}")
+        st.caption("Plus c'est bleu, plus c'est décoté par rapport à l'historique.")
         fig_tree = px.treemap(
             df, path=[px.Constant(current_idx), 'Sector', 'Ticker'], values='Market Cap', color='Premium/Discount',
             color_continuous_scale=scale, range_color=[-80, 80],
-            hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'Sector Median P/E':':.1f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
+            hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'Growth %':':.1f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
         )
         fig_tree.update_traces(textinfo="label+text", hovertemplate="<b>%{label}</b><br>Diff: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>")
         fig_tree.update_layout(height=700, margin=dict(t=20, l=10, r=10, b=10))
         st.plotly_chart(fig_tree, use_container_width=True)
 
-    # --- TAB 2 : REGRESSION ---
+    # --- TAB 2 : P/E vs CROISSANCE (Le vrai changement) ---
     with tab2:
         col_sel1, col_sel2 = st.columns([1, 3])
         
-        # MENU DÉROULANT (Qui ne fait plus crasher l'app !)
         all_sectors = sorted(df['Sector'].unique().tolist())
         selected_sector = col_sel1.selectbox("🔎 Filtrer par Secteur", ["Tous"] + all_sectors)
         
-        # FILTRAGE
         if selected_sector != "Tous":
             df_show = df[df['Sector'] == selected_sector]
-            
-            # Pour secteur unique -> X = P/E Historique
-            x_axis_col = "Avg Hist P/E"
-            x_axis_title = f"P/E Historique ({selected_sector})"
-            chart_title = f"Analyse : {selected_sector} (Comparaison Historique)"
-            
-            current_median = df_show['Sector Median P/E'].iloc[0] if not df_show.empty else 0
-            col_sel2.info(f"Médiane du secteur {selected_sector} : **{current_median:.1f}x**")
-            
+            title_chart = f"P/E vs Croissance : {selected_sector}"
         else:
             df_show = df
-            # Vue Globale -> X = Médiane Secteur
-            x_axis_col = "Sector Median P/E"
-            x_axis_title = "Médiane P/E du Secteur"
-            chart_title = "Vue Globale : Comparaison Inter-Sectorielle"
+            title_chart = "P/E vs Croissance : Vue Globale"
 
-        # SÉCURITÉ OLS
-        use_trendline = None
-        if len(df_show) > 2 and df_show[x_axis_col].nunique() > 1:
-            use_trendline = "ols"
+        # --- FILTRE DES VALEURS EXTRÊMES (Indispensable pour Growth) ---
+        # On enlève les boîtes qui ont une croissance de +500% (fausse la courbe) ou nulle
+        df_chart = df_show.dropna(subset=['Growth %', 'Forward P/E'])
+        df_chart = df_chart[(df_chart['Growth %'] > -50) & (df_chart['Growth %'] < 100)]
+        df_chart = df_chart[df_chart['Forward P/E'] < 100]
 
-        # GRAPHIQUE
-        if not df_show.empty:
+        if not df_chart.empty:
+            # Note : On garde la couleur Premium/Discount pour voir si le marché a raison de payer cher !
             fig_scatter = px.scatter(
-                df_show, 
-                x=x_axis_col, 
+                df_chart, 
+                x="Growth %", 
                 y="Forward P/E",
                 size="Market Cap", 
-                color="Premium/Discount",
+                color="Premium/Discount", 
                 color_continuous_scale=scale,
                 range_color=[-80, 80],
                 text="Ticker",
                 hover_name="Name",
-                trendline=use_trendline,
+                trendline="ols",
                 trendline_color_override="red",
-                title=chart_title
+                title=title_chart
             )
             
-            # Ligne de référence (y=x) si mode historique
-            if x_axis_col == "Avg Hist P/E":
-                max_val = max(df_show['Forward P/E'].max(), df_show['Avg Hist P/E'].max())
-                fig_scatter.add_shape(type="line", line=dict(dash='dash', color='gray'), x0=0, y0=0, x1=max_val, y1=max_val)
+            # Zone idéale (En bas à droite)
+            # On ne peut pas dessiner un rectangle facile sur Plotly express sans définir les coords exactes,
+            # mais la régression fait le travail.
 
             fig_scatter.update_traces(textposition='top center')
             fig_scatter.update_layout(
                 height=650, 
-                xaxis_title=x_axis_title, 
-                yaxis_title="Forward P/E (Actuel)"
+                xaxis_title="Croissance Estimée des Bénéfices (%)", 
+                yaxis_title="Prix Actuel (Forward P/E)"
             )
+            
             st.plotly_chart(fig_scatter, use_container_width=True)
+            
+            st.info("""
+            **Comment lire ce graphique ? (Stratégie GARP)**
+            * **En bas à droite (Sous la ligne rouge)** : Actions à forte croissance mais prix faible. **(Cibles potentielles)**.
+            * **En haut à gauche** : Actions chères avec faible croissance. (À éviter).
+            * **La couleur** indique si l'action est historiquement moins chère que d'habitude.
+            """)
+            
         else:
-            st.warning("Pas assez de données pour ce secteur.")
+            st.warning("Pas assez de données de croissance disponibles pour ce secteur.")
 
     # TABLEAU
     st.divider()
@@ -313,9 +312,14 @@ if 'data' in st.session_state:
         if v > 0: return 'color: orange'
         return 'color: black'
 
+    # On ajoute la colonne Growth % au tableau
     st.dataframe(
         df.sort_values("Premium/Discount").style.format({
-            "Market Cap": cur + "{:,.0f}", "Forward P/E": "{:.1f}", "Avg Hist P/E": "{:.1f}", "Sector Median P/E": "{:.1f}", "Premium/Discount": "{:+.1f}%"
+            "Market Cap": cur + "{:,.0f}", 
+            "Forward P/E": "{:.1f}", 
+            "Avg Hist P/E": "{:.1f}", 
+            "Growth %": "{:+.1f}%",
+            "Premium/Discount": "{:+.1f}%"
         }).map(color, subset=['Premium/Discount']),
         use_container_width=True
     )
