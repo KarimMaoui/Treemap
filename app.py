@@ -6,233 +6,244 @@ import time
 import requests
 from io import StringIO
 
-# --- 1. CONFIGURATION DE LA PAGE ---
-st.set_page_config(page_title="Super Market Screener", layout="wide")
+# --- 1. CONFIGURATION ---
+st.set_page_config(page_title="S&P 150 Deep Value", layout="wide")
 
-st.title("🚀 Super Market Screener : Multi-Indices")
+st.title("🏆 S&P 500 Top 150 : Analyse de Valeur Historique")
 st.markdown("""
-**Analysez la valorisation du marché US.**
-* **Vert** : Les bénéfices attendus sont supérieurs aux bénéfices actuels (Dynamique positive / "Moins cher" dans le futur).
-* **Rouge** : Les bénéfices attendus sont inférieurs (Dynamique négative / "Plus cher" dans le futur).
+Ce scanner isole les **150 plus grosses entreprises américaines** et compare leur prix actuel à leur **moyenne historique sur 5 ans**.
+* **Bleu/Vert** = Sous-évalué (Opportunité ?)
+* **Gris/Jaune** = Prix normal
+* **Rouge/Violet** = Surévalué (Risque ?)
 """)
 
-# --- 2. RÉCUPÉRATION DES LISTES (CORRECTIF ANTI-403) ---
+# --- 2. RÉCUPÉRATION ET FILTRAGE DU TOP 150 ---
 
-@st.cache_data
-def get_tickers(index_name):
+@st.cache_data(ttl=3600*24)
+def get_sp150_tickers():
     """
-    Récupère la liste des tickers depuis Wikipedia.
-    Utilise un 'User-Agent' pour éviter l'erreur HTTP 403 Forbidden.
+    1. Récupère les 500 tickers du S&P.
+    2. Récupère rapidement leur Market Cap.
+    3. Garde les 150 plus gros.
     """
-    tickers = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+    status = st.empty()
+    status.text("⏳ Récupération de la liste S&P 500...")
     
-    # C'est ici que la magie opère : on fait croire qu'on est un navigateur Chrome
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-
     try:
-        if index_name == "Nasdaq 100":
-            url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-            response = requests.get(url, headers=headers)
-            # On utilise StringIO pour convertir le texte en fichier lisible par pandas
-            tables = pd.read_html(StringIO(response.text))
-            
-            for table in tables:
-                if 'Ticker' in table.columns:
-                    tickers = table['Ticker'].tolist()
-                    break
-                if 'Symbol' in table.columns:
-                    tickers = table['Symbol'].tolist()
-                    break
-            
-        elif index_name == "S&P 500":
-            url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-            response = requests.get(url, headers=headers)
-            table = pd.read_html(StringIO(response.text))[0]
-            tickers = table['Symbol'].tolist()
-            # Yahoo utilise des tirets au lieu des points (ex: BRK-B)
-            tickers = [t.replace('.', '-') for t in tickers]
+        # 1. Liste complète via Wikipedia
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        r = requests.get(url, headers=headers)
+        table = pd.read_html(StringIO(r.text))[0]
+        tickers = table['Symbol'].tolist()
+        tickers = [t.replace('.', '-') for t in tickers] # Correction BRK.B
+        
+        # 2. Tri par Market Cap (Utilisation de fast_info pour la vitesse)
+        status.text(f"⚡ Tri des 150 plus grosses capitalisations parmi {len(tickers)} actions...")
+        
+        market_caps = {}
+        
+        # On utilise des batchs pour ne pas surcharger
+        # Note : On ne peut pas faire batch complet sur fast_info facilement sans itérer, 
+        # mais c'est très rapide (quelques ms par ticker).
+        
+        # Pour aller vite, on prend un échantillon ou on le fait brute force optimisé
+        # Ici méthode robuste :
+        batch_size = 50
+        for i in range(0, len(tickers), batch_size):
+            batch = tickers[i:i+batch_size]
+            # yfinance permet d'accéder à fast_info sans télécharger tout l'historique
+            for t in batch:
+                try:
+                    # On crée l'objet Ticker sans télécharger les data
+                    info = yf.Ticker(t).fast_info
+                    mcap = info['market_cap']
+                    if mcap:
+                        market_caps[t] = mcap
+                except:
+                    continue
+        
+        # Tri décroissant et coupe à 150
+        sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:150]
+        
+        status.empty()
+        return sorted_tickers
 
-        elif index_name == "Dow Jones 30":
-            url = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
-            response = requests.get(url, headers=headers)
-            table = pd.read_html(StringIO(response.text))[1]
-            tickers = table['Symbol'].tolist()
-            
-        elif index_name == "Tech Small Caps (Demo)":
-            tickers = [
-                "PLTR", "PATH", "U", "DKNG", "RBLX", "AFRM", "HOOD", "DUOL", 
-                "MDB", "NET", "OKTA", "TWLO", "DOCU", "ZS", "CRWD", "BILL", 
-                "GTLB", "HCP", "S", "IOT", "APP", "ASAN", "CFLT", "MNDY"
-            ]
-            
     except Exception as e:
-        st.error(f"Erreur lors de la récupération de l'indice : {e}")
-        return []
-    
-    return tickers
+        st.error(f"Erreur récupération Top 150 : {e}")
+        return ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"] # Fallback
 
-# --- 3. MOTEUR D'ANALYSE ---
+# --- 3. ANALYSE PROFONDE (HISTORIQUE P/E) ---
 
 @st.cache_data(ttl=3600*12)
-def analyze_market(tickers, max_items=100):
-    
-    # Limitation pour la performance (Yahoo peut être lent)
-    if len(tickers) > max_items:
-        st.warning(f"⚠️ Analyse limitée aux {max_items} premières actions de l'indice pour la rapidité.")
-        tickers = tickers[:max_items]
+def get_historical_valuation(ticker):
+    """Calcule la valorisation relative (Fwd P/E vs Moyenne Hist 5 ans)."""
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        # Filtres de base
+        sector = info.get('sector', 'Unknown')
+        fwd_pe = info.get('forwardPE', None)
+        
+        if fwd_pe is None: return None
 
+        # Récupération des données comptables pour l'historique
+        financials = stock.financials
+        if financials.empty: return None
+            
+        # Recherche EPS
+        eps_data = financials.T 
+        eps_cols = [c for c in eps_data.columns if 'EPS' in str(c) or 'Earnings' in str(c)]
+        if not eps_cols: return None
+        
+        eps_series = eps_data[eps_cols[0]].sort_index()
+        
+        # Historique Prix
+        start_date = eps_series.index.min().strftime('%Y-%m-%d')
+        history = stock.history(start=start_date)
+        
+        # Calcul P/E Historique
+        pe_ratios = []
+        for date, eps in eps_series.items():
+            year = date.year
+            mask = history.index.year == year
+            if not mask.any(): continue
+            avg_price = history.loc[mask, 'Close'].mean()
+            if avg_price and eps > 0:
+                pe_ratios.append(avg_price / eps)
+        
+        if not pe_ratios: return None
+            
+        avg_historical_pe = sum(pe_ratios) / len(pe_ratios)
+
+        # Calcul Premium/Discount
+        valuation_diff = (fwd_pe - avg_historical_pe) / avg_historical_pe
+        
+        return {
+            "Ticker": ticker,
+            "Name": info.get('shortName', ticker),
+            "Sector": sector,
+            "Market Cap": info.get('marketCap', 0),
+            "Forward P/E": fwd_pe,
+            "Avg Hist P/E": avg_historical_pe,
+            "Premium/Discount": valuation_diff * 100
+        }
+
+    except Exception:
+        return None
+
+def run_analysis(tickers_list):
     data = []
-    # Barre de progression
     progress_bar = st.progress(0)
     status_text = st.empty()
-    total = len(tickers)
+    total = len(tickers_list)
     
-    for i, ticker in enumerate(tickers):
-        status_text.text(f"Scan en cours : {ticker}")
+    for i, ticker in enumerate(tickers_list):
+        status_text.text(f"Analyse approfondie : {ticker} ({i+1}/{total})")
+        res = get_historical_valuation(ticker)
+        if res:
+            data.append(res)
         
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            
-            market_cap = info.get('marketCap', 0)
-            if not market_cap: continue
-
-            # Pour le scan rapide multi-indices, on compare Forward vs Trailing
-            # C'est le meilleur proxy de "Tendance de Valorisation" instantané
-            fwd_pe = info.get('forwardPE', None)
-            trailing_pe = info.get('trailingPE', None)
-            
-            sector = info.get('sector', 'Inconnu')
-            industry = info.get('industry', 'Inconnu')
-            name = info.get('shortName', ticker)
-
-            val_score = 0
-            
-            if fwd_pe and trailing_pe:
-                # Si Fwd < Trailing : L'action devient "moins chère" (Bénéfices en hausse) -> Score Négatif (Vert)
-                # Si Fwd > Trailing : L'action devient "plus chère" (Bénéfices en baisse) -> Score Positif (Rouge)
-                val_score = ((fwd_pe - trailing_pe) / trailing_pe) * 100
-            
-            if fwd_pe is not None:
-                data.append({
-                    "Ticker": ticker,
-                    "Name": name,
-                    "Sector": sector,
-                    "Industry": industry,
-                    "Market Cap": market_cap,
-                    "Forward P/E": fwd_pe,
-                    "Trailing P/E": trailing_pe if trailing_pe else 0,
-                    "Valuation Trend": val_score 
-                })
-
-        except Exception:
-            pass
-        
-        # Mise à jour barre progression
+        # Petite pause pour éviter le blocage Yahoo
+        time.sleep(0.05) 
         progress_bar.progress((i + 1) / total)
     
     progress_bar.empty()
     status_text.empty()
     return pd.DataFrame(data)
 
-# --- 4. BARRE LATÉRALE ---
+# --- 4. INTERFACE ---
 
-with st.sidebar:
-    st.header("⚙️ Réglages")
+if st.button('🚀 Lancer le Scan (Top 150 S&P)', type="primary"):
     
-    selected_index = st.selectbox(
-        "Indice à scanner :",
-        ("Nasdaq 100", "Dow Jones 30", "S&P 500", "Tech Small Caps (Demo)")
-    )
+    # 1. On récupère les 150 plus gros
+    top_tickers = get_sp150_tickers()
+    st.success(f"Liste établie : {len(top_tickers)} plus grosses entreprises identifiées.")
     
-    # Slider vital pour ne pas attendre 10 minutes sur le S&P 500
-    limit_stocks = st.slider("Limite nombre d'actions", 10, 500, 50)
+    # 2. On lance l'analyse lourde
+    df = run_analysis(top_tickers)
     
-    st.divider()
-    
-    if st.button("Lancer l'analyse", type="primary"):
-        st.session_state['run_analysis'] = True
-
-# --- 5. VISUALISATION ---
-
-if st.session_state.get('run_analysis'):
-    
-    # 1. Récupération liste
-    tickers = get_tickers(selected_index)
-    
-    if tickers:
-        st.info(f"🔍 {len(tickers)} actions trouvées dans {selected_index}. Lancement du scan...")
+    if not df.empty:
+        st.divider()
         
-        # 2. Scan
-        df = analyze_market(tickers, max_items=limit_stocks)
-        
-        if not df.empty:
-            st.write("---")
-            
-            # 3. Configuration des couleurs (Ton échelle 10 couleurs)
-            custom_scale = [
-                "#00008B", # Bleu Nuit   (-80%) 
-                "#0000FF", # Bleu        (-60%) 
-                "#00BFFF", # Cyan        (-40%) 
-                "#2E8B57", # Vert Mer    (-20%) 
-                "#32CD32", # Vert Lime   ( -5%) 
-                "#FFFF00", # Jaune       ( +5%) 
-                "#FFD700", # Or          (+20%) 
-                "#FF8C00", # Orange      (+40%) 
-                "#FF0000", # Rouge       (+60%) 
-                "#800080"  # Violet      (+80%) 
-            ]
+        col1, col2 = st.columns(2)
+        col1.metric("Actions Analysées", len(df))
+        med = df['Premium/Discount'].median()
+        col2.metric("Niveau Médian du Marché", f"{med:+.1f}%", 
+                    delta="Sous-évalué" if med < 0 else "Surévalué", delta_color="inverse")
 
-            st.subheader(f"🗺️ Heatmap : {selected_index}")
-            st.caption("Cliquez sur un secteur pour zoomer (Drill-down).")
+        # --- TREEMAP CONFIGURATION (Celle que tu voulais) ---
+        
+        # Échelle à 10 couleurs distinctes pour bien discriminer les zones
+        # Du "Froid/Pas cher" (Bleu) vers le "Brûlant/Cher" (Rouge/Violet)
+        custom_scale = [
+            "#00008B", # 1. Bleu Nuit   (-80%) : Opportunité extrême
+            "#0000FF", # 2. Bleu        (-60%) : Très sous-évalué
+            "#00BFFF", # 3. Cyan        (-40%) : Sous-évalué
+            "#2E8B57", # 4. Vert Mer    (-20%) : Bon prix
+            "#32CD32", # 5. Vert Lime   ( -5%) : Légère décote
+            "#FFFF00", # 6. Jaune       ( +5%) : Prix Juste / Légère prime
+            "#FFD700", # 7. Or          (+20%) : Commence à être cher
+            "#FF8C00", # 8. Orange Foncé(+40%) : Cher
+            "#FF0000", # 9. Rouge       (+60%) : Très cher
+            "#800080"  # 10. Violet     (+80%) : Bulle spéculative
+        ]
+
+        st.subheader("🗺️ Carte Thermique de Valorisation (10 Niveaux)")
+        st.caption("Échelle : Bleu (Pas cher) ➔ Vert ➔ Jaune ➔ Rouge (Très cher)")
+
+        fig = px.treemap(
+            df,
+            path=[px.Constant("S&P 500 Top 150"), 'Sector', 'Ticker'],
+            values='Market Cap',
+            color='Premium/Discount',
             
-            # Création de la Treemap
-            fig = px.treemap(
-                df,
-                # Hiérarchie pour le zoom : Indice -> Secteur -> Industrie -> Action
-                path=[px.Constant(selected_index), 'Sector', 'Industry', 'Ticker'], 
-                values='Market Cap',
-                color='Valuation Trend',
-                
-                # Tes réglages visuels
-                color_continuous_scale=custom_scale,
-                range_color=[-80, 80],
-                
-                hover_data={
-                    'Valuation Trend': ':.1f%',
-                    'Forward P/E': ':.1f',
-                    'Trailing P/E': ':.1f',
-                    'Sector': False,
-                    'Ticker': False
-                }
-            )
+            # Application de l'échelle à 10 couleurs
+            color_continuous_scale=custom_scale,
+            range_color=[-80, 80],
             
-            fig.update_traces(
-                textinfo="label+text",
-                hovertemplate="<b>%{label}</b><br>Val Trend: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>"
-            )
-            
-            fig.update_layout(height=800, margin=dict(t=30, l=10, r=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Tableau de données
-            st.subheader("Données détaillées")
-            st.dataframe(
-                df.sort_values("Valuation Trend")
-                .style.format({
-                    "Market Cap": "${:,.0f}", 
-                    "Forward P/E": "{:.1f}", 
-                    "Valuation Trend": "{:+.1f}%"
-                }),
-                use_container_width=True
-            )
-            
-        else:
-            st.warning("Aucune donnée récupérée. Vérifiez votre connexion internet.")
+            hover_data={
+                'Premium/Discount': ':.1f%',
+                'Forward P/E': ':.1f',
+                'Avg Hist P/E': ':.1f',
+                'Market Cap': False,
+                'Sector': False,
+                'Ticker': False
+            }
+        )
+        
+        # Petite amélioration pour afficher le texte Ticker + %
+        fig.update_traces(
+            textinfo="label+text",
+            hovertemplate="<b>%{label}</b><br>Diff Moyenne: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>"
+        )
+        
+        fig.update_layout(height=800, margin=dict(t=30, l=10, r=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Tableau Données
+        st.subheader("Données Détaillées")
+        
+        # Fonction couleur tableau
+        def color_val(val):
+            if val < -20: return 'color: blue; font-weight: bold'
+            if val < 0: return 'color: green'
+            if val > 40: return 'color: red; font-weight: bold'
+            if val > 0: return 'color: orange'
+            return 'color: black'
+
+        st.dataframe(
+            df.sort_values("Premium/Discount").style
+            .format({
+                "Market Cap": "${:,.0f}",
+                "Forward P/E": "{:.1f}",
+                "Avg Hist P/E": "{:.1f}",
+                "Premium/Discount": "{:+.1f}%"
+            })
+            .map(color_val, subset=['Premium/Discount']),
+            use_container_width=True
+        )
+
     else:
-        st.error("Impossible de récupérer la liste de l'indice.")
-
-else:
-    st.info("👈 Choisissez un indice à gauche et cliquez sur le bouton pour démarrer.")
+        st.error("Aucune donnée disponible. Vérifiez la connexion.")
