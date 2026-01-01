@@ -8,52 +8,84 @@ import re
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V8.1", layout="wide")
+st.set_page_config(page_title="Global Screener V10", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V8.1 - Patch Canada)")
+st.title("🌍 Ultimate Global Screener (V10 - Pure Dynamic)")
 st.markdown("""
 **Scan de Valorisation Mondiale (P/E vs Moyenne Hist. 5 ans)**
-* 🇺🇸 **US** | 🇪🇺 **Europe** | 🇨🇦 **Canada** | 🇯🇵 **Japon**
+* 100% Dynamique (Aucune liste statique).
 """)
 
-# --- 2. FONCTION DE RÉCUPÉRATION AVANCÉE ---
+# --- 2. FONCTIONS DE SCRAPING SPÉCIFIQUES ---
 
-def get_tickers_from_wikipedia(url, index_suffix=""):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+def get_nikkei_dynamic():
+    """
+    Va chercher les composants du Nikkei sur plusieurs sites "Live".
+    Ne contient AUCUNE donnée statique.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    tickers = []
+    
+    # --- TENTATIVE 1 : TopForeignStocks (Tableau propre) ---
     try:
-        r = requests.get(url, headers=headers)
-        text_content = r.text
-        
-        found_tickers = []
-        
-        # --- CAS SPÉCIAL JAPON (Regex pour TYO: XXXX) ---
-        if index_suffix == ".T":
-            matches = re.findall(r'TYO:\s*(\d{4})', text_content)
-            unique_codes = sorted(list(set(matches)))
-            found_tickers = [f"{code}.T" for code in unique_codes]
-            return found_tickers
-
-        # --- CAS CLASSIQUES (Tableaux) ---
-        tables = pd.read_html(StringIO(text_content))
-        possible_cols = ['Symbol', 'Ticker', 'Code', 'Security Symbol', 'Stock symbol', 'Securities Code']
+        url = "https://topforeignstocks.com/indices/the-components-of-the-nikkei-225-index/"
+        r = requests.get(url, headers=headers, timeout=10)
+        tables = pd.read_html(StringIO(r.text))
         
         for df in tables:
-            col_match = None
-            for col in df.columns:
-                if str(col).strip() in possible_cols:
-                    col_match = col
-                    break
+            # On cherche une colonne "Code" ou "Symbol"
+            if 'Code' in df.columns:
+                raw_list = df['Code'].astype(str).tolist()
+                # Nettoyage : garder les codes à 4 chiffres
+                for t in raw_list:
+                    if t.isdigit() and len(t) == 4:
+                        tickers.append(f"{t}.T")
+                
+                if len(tickers) > 100:
+                    return tickers
+    except Exception:
+        pass # On passe à la source suivante si échec
+
+    # --- TENTATIVE 2 : Wikipedia (Regex Brut sur le texte) ---
+    try:
+        url = "https://en.wikipedia.org/wiki/Nikkei_225"
+        r = requests.get(url, headers=headers, timeout=10)
+        text_content = r.text
+        
+        # Regex pour trouver "(TYO: 7203)" ou "TYO:7203"
+        matches = re.findall(r'TYO:\s*(\d{4})', text_content)
+        unique_codes = sorted(list(set(matches)))
+        
+        if unique_codes:
+            return [f"{c}.T" for c in unique_codes]
+            
+    except Exception:
+        pass
+
+    return [] # Si tout échoue, renvoie vide (Pas de filet)
+
+def get_tickers_from_wikipedia(url, index_suffix=""):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        tables = pd.read_html(StringIO(r.text))
+        
+        found_tickers = []
+        possible_cols = ['Symbol', 'Ticker', 'Code', 'Security Symbol']
+        
+        for df in tables:
+            col_match = next((c for c in df.columns if str(c).strip() in possible_cols), None)
             
             if col_match:
                 raw_list = df[col_match].tolist()
                 for t in raw_list:
                     t = str(t).strip()
-                    # On ignore les valeurs vides ou "nan"
-                    if t.lower() == "nan" or t == "":
-                        continue
-                        
-                    if index_suffix == ".TO" and ".TO" in t:
-                        found_tickers.append(t)
+                    if t.lower() == "nan" or t == "": continue
+                    
+                    if index_suffix == ".TO":
+                        if ".TO" in t: found_tickers.append(t)
                     else:
                         if index_suffix and not t.endswith(index_suffix):
                             t = f"{t}{index_suffix}"
@@ -61,19 +93,18 @@ def get_tickers_from_wikipedia(url, index_suffix=""):
                 
                 if len(found_tickers) > 10:
                     return found_tickers
-
         return found_tickers
-    except Exception:
+    except:
         return []
 
 @st.cache_data(ttl=3600*24)
 def get_top_tickers(index_name, limit):
     status = st.empty()
-    status.text(f"⏳ Récupération de la liste {index_name}...")
+    status.text(f"⏳ Scraping en direct : {index_name}...")
     
     tickers = []
     
-    # --- LOGIQUE DE SELECTION ---
+    # --- ROUTAGE DES SOURCES ---
     if index_name == "S&P 500 (USA)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", "")
         tickers = [t.replace('.', '-') for t in tickers]
@@ -82,17 +113,11 @@ def get_top_tickers(index_name, limit):
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Nasdaq-100", "")
     
     elif index_name == "TSX 60 (Canada)":
-        raw_tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/S%26P/TSX_60", ".TO")
-        # --- PATCH CORRECTIF CANADA (V8.1) ---
-        # 1. On remplace les points par des tirets (ex: CTC.A -> CTC-A)
-        # 2. On filtre les NAN
+        # Patch Canada
+        raw = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/S%26P/TSX_60", ".TO")
         tickers = []
-        for t in raw_tickers:
-            if "nan" in t.lower(): continue
-            # On isole la racine avant le .TO
-            root = t.replace(".TO", "")
-            # On remplace le point par un tiret dans le symbole (règle Yahoo TSX)
-            root = root.replace(".", "-")
+        for t in raw:
+            root = t.replace(".TO", "").replace(".", "-")
             tickers.append(f"{root}.TO")
     
     elif index_name == "CAC 40 (France)":
@@ -101,20 +126,22 @@ def get_top_tickers(index_name, limit):
     elif index_name == "DAX 40 (Allemagne)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/DAX", ".DE")
     
-    elif index_name == "FTSE 100 (Royaume-Uni)":
+    elif index_name == "FTSE 100 (UK)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/FTSE_100_Index", ".L")
     
     elif index_name == "SMI 20 (Suisse)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Swiss_Market_Index", ".SW")
     
     elif index_name == "Nikkei 225 (Japon)":
-        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Nikkei_225", ".T")
+        # Appel à notre fonction spéciale multi-sources
+        tickers = get_nikkei_dynamic()
 
     if not tickers:
         return []
 
-    status.text(f"⚡ Tri des {limit} plus grosses entreprises ({index_name})...")
+    status.text(f"⚡ Tri par Market Cap ({len(tickers)} trouvés)...")
     
+    # Tri et Sélection
     market_caps = {}
     safe_limit = min(limit, len(tickers))
     batch_size = 50
@@ -213,7 +240,7 @@ with c1:
     indices = [
         "S&P 500 (USA)", "Nasdaq 100 (USA)", 
         "CAC 40 (France)", "DAX 40 (Allemagne)", 
-        "FTSE 100 (Royaume-Uni)", "SMI 20 (Suisse)",
+        "FTSE 100 (UK)", "SMI 20 (Suisse)",
         "TSX 60 (Canada)", "Nikkei 225 (Japon)"
     ]
     idx = st.selectbox("1. Choisir l'Indice", indices)
@@ -236,7 +263,7 @@ with c3:
 if btn:
     top = get_top_tickers(idx, nb)
     if top:
-        st.success(f"Cible : {len(top)} entreprises.")
+        st.success(f"Cible : {len(top)} entreprises récupérées en direct.")
         df = run_analysis(top)
         
         if not df.empty:
@@ -263,7 +290,7 @@ if btn:
             st.subheader("Données Détaillées")
             cur = "$"
             if "France" in idx or "Allemagne" in idx: cur = "€"
-            elif "Royaume" in idx: cur = "£"
+            elif "UK" in idx: cur = "£"
             elif "Suisse" in idx: cur = "CHF "
             elif "Japon" in idx: cur = "¥"
             elif "Canada" in idx: cur = "C$ "
@@ -282,4 +309,4 @@ if btn:
                 use_container_width=True
             )
         else: st.warning("Pas de données complètes.")
-    else: st.error("Impossible de récupérer la liste des tickers.")
+    else: st.error("Impossible de récupérer la liste des tickers (Source externe inaccessible).")
