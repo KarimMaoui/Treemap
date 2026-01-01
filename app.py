@@ -8,9 +8,9 @@ import re
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V8", layout="wide")
+st.set_page_config(page_title="Global Screener V8.1", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V8 - Scraping Textuel)")
+st.title("🌍 Ultimate Global Screener (V8.1 - Patch Canada)")
 st.markdown("""
 **Scan de Valorisation Mondiale (P/E vs Moyenne Hist. 5 ans)**
 * 🇺🇸 **US** | 🇪🇺 **Europe** | 🇨🇦 **Canada** | 🇯🇵 **Japon**
@@ -26,20 +26,14 @@ def get_tickers_from_wikipedia(url, index_suffix=""):
         
         found_tickers = []
         
-        # --- CAS SPÉCIAL JAPON (Structure TYO: XXXX) ---
+        # --- CAS SPÉCIAL JAPON (Regex pour TYO: XXXX) ---
         if index_suffix == ".T":
-            # On cherche le motif exact fourni dans votre texte : "TYO: 9202"
-            # Regex : TYO:\s*(\d{4}) -> Cherche TYO: suivi d'espace optionnel et de 4 chiffres
             matches = re.findall(r'TYO:\s*(\d{4})', text_content)
-            
-            # On dédoublonne et on ajoute le suffixe .T
             unique_codes = sorted(list(set(matches)))
             found_tickers = [f"{code}.T" for code in unique_codes]
-            
             return found_tickers
 
         # --- CAS CLASSIQUES (Tableaux) ---
-        # Pour les autres indices, on garde la méthode des tableaux qui marche bien
         tables = pd.read_html(StringIO(text_content))
         possible_cols = ['Symbol', 'Ticker', 'Code', 'Security Symbol', 'Stock symbol', 'Securities Code']
         
@@ -54,6 +48,10 @@ def get_tickers_from_wikipedia(url, index_suffix=""):
                 raw_list = df[col_match].tolist()
                 for t in raw_list:
                     t = str(t).strip()
+                    # On ignore les valeurs vides ou "nan"
+                    if t.lower() == "nan" or t == "":
+                        continue
+                        
                     if index_suffix == ".TO" and ".TO" in t:
                         found_tickers.append(t)
                     else:
@@ -65,7 +63,7 @@ def get_tickers_from_wikipedia(url, index_suffix=""):
                     return found_tickers
 
         return found_tickers
-    except Exception as e:
+    except Exception:
         return []
 
 @st.cache_data(ttl=3600*24)
@@ -84,7 +82,18 @@ def get_top_tickers(index_name, limit):
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Nasdaq-100", "")
     
     elif index_name == "TSX 60 (Canada)":
-        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/S%26P/TSX_60", ".TO")
+        raw_tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/S%26P/TSX_60", ".TO")
+        # --- PATCH CORRECTIF CANADA (V8.1) ---
+        # 1. On remplace les points par des tirets (ex: CTC.A -> CTC-A)
+        # 2. On filtre les NAN
+        tickers = []
+        for t in raw_tickers:
+            if "nan" in t.lower(): continue
+            # On isole la racine avant le .TO
+            root = t.replace(".TO", "")
+            # On remplace le point par un tiret dans le symbole (règle Yahoo TSX)
+            root = root.replace(".", "-")
+            tickers.append(f"{root}.TO")
     
     elif index_name == "CAC 40 (France)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/CAC_40", ".PA")
@@ -99,7 +108,6 @@ def get_top_tickers(index_name, limit):
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Swiss_Market_Index", ".SW")
     
     elif index_name == "Nikkei 225 (Japon)":
-        # Ici, on appelle notre scraper spécial "TYO:"
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Nikkei_225", ".T")
 
     if not tickers:
@@ -274,4 +282,4 @@ if btn:
                 use_container_width=True
             )
         else: st.warning("Pas de données complètes.")
-    else: st.error("Impossible de récupérer la liste des tickers (Problème connexion ou Wikipedia).")
+    else: st.error("Impossible de récupérer la liste des tickers.")
