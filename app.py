@@ -2,19 +2,20 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import time
 import requests
 import re
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V12", layout="wide")
+st.set_page_config(page_title="Global Screener V13", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V12 - Analytics)")
+st.title("🌍 Ultimate Global Screener (V13 - Analyse Sectorielle)")
 st.markdown("""
-**Analyse de Valorisation (P/E Actuel vs Historique)**
-* **Onglet 1** : Carte du marché (Treemap).
-* **Onglet 2** : Régression Linéaire (Corrélation P/E).
+**Analyse de Valorisation Avancée**
+* **Onglet 1** : Vue Globale (Treemap).
+* **Onglet 2** : Analyse Sectorielle (Comparaison P/E vs Médiane du Secteur).
 """)
 
 # --- 2. FONCTIONS DE SCRAPING ---
@@ -196,10 +197,8 @@ if btn:
             
             st.divider()
             
-            # --- ONGLETS (TABS) ---
-            tab1, tab2 = st.tabs(["🗺️ Treemap", "📈 Régression Linéaire"])
+            tab1, tab2 = st.tabs(["🗺️ Treemap Globale", "📊 Analyse Sectorielle (P/E)"])
             
-            # Palette commune
             scale = ["#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"]
             
             # --- TAB 1 : TREEMAP ---
@@ -214,39 +213,56 @@ if btn:
                 fig_tree.update_layout(height=700, margin=dict(t=20, l=10, r=10, b=10))
                 st.plotly_chart(fig_tree, use_container_width=True)
 
-            # --- TAB 2 : REGRESSION ---
+            # --- TAB 2 : ANALYSE SECTORIELLE ---
             with tab2:
-                st.subheader("Régression : P/E Actuel vs P/E Historique")
-                st.caption("• Axe X : P/E Historique (Moyenne 5 ans) | • Axe Y : Forward P/E (Actuel)")
-                st.caption("• Taille des points : Market Cap | • Couleur : Premium/Discount")
+                col_sel1, col_sel2 = st.columns([1, 3])
                 
-                # Gestion des outliers extrêmes pour le graphique (max P/E 100 pour lisibilité)
-                df_clean = df[(df['Forward P/E'] < 150) & (df['Avg Hist P/E'] < 150)]
+                # 1. Menu Déroulant pour choisir le secteur
+                all_sectors = sorted(df['Sector'].unique().tolist())
+                # On ajoute une option "Tous" si l'utilisateur veut voir tout quand même
+                selected_sector = col_sel1.selectbox("🔎 Filtrer par Secteur", ["Tous"] + all_sectors)
                 
+                # 2. Filtrage des données
+                if selected_sector != "Tous":
+                    df_sector = df[df['Sector'] == selected_sector]
+                    title_chart = f"Valorisation du secteur : {selected_sector}"
+                else:
+                    df_sector = df
+                    title_chart = f"Valorisation Globale ({idx})"
+                
+                # 3. Calcul de la Médiane du Secteur (Ligne de référence)
+                sector_median_pe = df_sector['Forward P/E'].median()
+                
+                col_sel2.metric(f"P/E Médian ({selected_sector})", f"{sector_median_pe:.1f}x")
+                
+                # 4. Création du Scatter Plot
+                # Axe X : Market Cap (Log) pour bien espacer les petites et grosses boîtes
+                # Axe Y : Forward P/E
                 fig_scatter = px.scatter(
-                    df_clean, 
-                    x="Avg Hist P/E", 
+                    df_sector, 
+                    x="Market Cap", 
                     y="Forward P/E",
                     size="Market Cap", 
-                    color="Premium/Discount",
+                    color="Premium/Discount", # On garde ton code couleur historique pour la cohérence
                     color_continuous_scale=scale,
                     range_color=[-80, 80],
                     text="Ticker",
                     hover_name="Name",
-                    trendline="ols", # Ligne de régression linéaire
-                    trendline_color_override="red"
+                    log_x=True, # Échelle logarithmique horizontale importante
+                    title=title_chart
                 )
                 
-                # Ajout de la ligne d'identité (y=x) pour repère visuel "Juste Prix"
-                max_val = max(df_clean['Forward P/E'].max(), df_clean['Avg Hist P/E'].max())
-                fig_scatter.add_shape(
-                    type="line", line=dict(dash='dash', color='gray'),
-                    x0=0, y0=0, x1=max_val, y1=max_val
+                # 5. Ajout de la ligne Médiane
+                fig_scatter.add_hline(
+                    y=sector_median_pe, 
+                    line_dash="dot", 
+                    line_color="gray", 
+                    annotation_text=f"Médiane Secteur: {sector_median_pe:.1f}x", 
+                    annotation_position="bottom right"
                 )
-                fig_scatter.add_annotation(x=max_val*0.8, y=max_val*0.8, text="Prix Historique (y=x)", showarrow=False, font=dict(color="gray"))
 
                 fig_scatter.update_traces(textposition='top center')
-                fig_scatter.update_layout(height=700)
+                fig_scatter.update_layout(height=650, xaxis_title="Capitalisation Boursière (Log)", yaxis_title="Forward P/E (Actuel)")
                 st.plotly_chart(fig_scatter, use_container_width=True)
 
             # TABLEAU
