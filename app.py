@@ -7,22 +7,22 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Market Screener", layout="wide")
+st.set_page_config(page_title="Clean Market Screener", layout="wide")
 
 st.title("🌍 Global Market Screener : US & Europe")
 st.markdown("""
-Analysez la valorisation historique (P/E vs Moyenne 5 ans) sur les marchés US et Européens.
+Analysez la valorisation (P/E vs Moyenne 5 ans).
 * **Bleu/Vert** = Sous-évalué (Opportunité ?)
 * **Rouge/Violet** = Surévalué (Risque ?)
 """)
 
-# --- 2. RÉCUPÉRATION ET FILTRAGE DYNAMIQUE (CORRIGÉ) ---
+# --- 2. RÉCUPÉRATION ET FILTRAGE DYNAMIQUE ---
 
 @st.cache_data(ttl=3600*24)
 def get_top_tickers(index_name, limit):
     """
-    Récupère les tickers, gère INTELLIGEMMENT les suffixes (évite le .PA.PA),
-    trie par Market Cap et renvoie le Top 'limit'.
+    Récupère les tickers avec les bons suffixes pour le calcul,
+    mais on s'occupera du nettoyage visuel plus tard.
     """
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     status = st.empty()
@@ -35,7 +35,6 @@ def get_top_tickers(index_name, limit):
         if index_name == "S&P 500":
             url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
             r = requests.get(url, headers=headers)
-            # Table 0 is usually S&P 500 components
             table = pd.read_html(StringIO(r.text))[0]
             tickers = table['Symbol'].tolist()
             tickers = [t.replace('.', '-') for t in tickers] 
@@ -52,7 +51,7 @@ def get_top_tickers(index_name, limit):
                     tickers = t['Symbol'].tolist()
                     break
 
-        # --- EUROPE (CORRECTION DOUBLE SUFFIXE) ---
+        # --- EUROPE (Avec suffixes pour Yahoo) ---
         elif index_name == "CAC 40 (France)":
             url = "https://en.wikipedia.org/wiki/CAC_40"
             r = requests.get(url, headers=headers)
@@ -64,7 +63,6 @@ def get_top_tickers(index_name, limit):
                     raw_tickers = t['Ticker'].tolist()
                     break
             
-            # Correction : On n'ajoute .PA que s'il n'est pas déjà là
             tickers = []
             for t in raw_tickers:
                 t = str(t).strip()
@@ -84,7 +82,6 @@ def get_top_tickers(index_name, limit):
                     raw_tickers = t['Ticker'].tolist()
                     break
             
-            # Correction : On n'ajoute .DE que s'il n'est pas déjà là
             tickers = []
             for t in raw_tickers:
                 t = str(t).strip()
@@ -94,24 +91,18 @@ def get_top_tickers(index_name, limit):
                     tickers.append(f"{t}.DE")
 
         # --- TRI PAR MARKET CAP ---
-        if not tickers:
-            st.error("Aucun ticker trouvé sur Wikipédia.")
-            return []
+        if not tickers: return []
 
         status.text(f"⚡ Tri des {limit} plus grosses entreprises du {index_name}...")
         
         market_caps = {}
-        
-        # Sécurité pour les petits indices
         safe_limit = min(limit, len(tickers))
-
-        # Batching
         batch_size = 50
+        
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i+batch_size]
             for t in batch:
                 try:
-                    # fast_info est très rapide et léger
                     info = yf.Ticker(t).fast_info
                     mcap = info['market_cap']
                     if mcap:
@@ -120,12 +111,11 @@ def get_top_tickers(index_name, limit):
                     continue
         
         sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:safe_limit]
-        
         status.empty()
         return sorted_tickers
 
     except Exception as e:
-        st.error(f"Erreur récupération {index_name} : {e}")
+        st.error(f"Erreur : {e}")
         return []
 
 # --- 3. ANALYSE PROFONDE ---
@@ -136,12 +126,10 @@ def get_historical_valuation(ticker):
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # Données de base
         sector = info.get('sector', 'Unknown')
         fwd_pe = info.get('forwardPE', None)
-        currency = info.get('currency', 'USD')
         
-        # Si pas de Forward PE (fréquent en Europe), on tente le Trailing PE comme fallback
+        # Fallback Trailing PE si Forward manquant (fréquent en Europe)
         if fwd_pe is None:
             fwd_pe = info.get('trailingPE', None)
         
@@ -156,7 +144,6 @@ def get_historical_valuation(ticker):
         if not eps_cols: return None
         
         eps_series = eps_data[eps_cols[0]].sort_index()
-        
         if eps_series.empty: return None
 
         start_date = eps_series.index.min().strftime('%Y-%m-%d')
@@ -175,17 +162,14 @@ def get_historical_valuation(ticker):
         if not pe_ratios: return None
             
         avg_historical_pe = sum(pe_ratios) / len(pe_ratios)
-        
-        # Sécurité division par zéro
         if avg_historical_pe == 0: return None
         
         valuation_diff = (fwd_pe - avg_historical_pe) / avg_historical_pe
         
         return {
-            "Ticker": ticker,
+            "Ticker": ticker, # On garde le ticker technique ici (ex: MC.PA)
             "Name": info.get('shortName', ticker),
             "Sector": sector,
-            "Currency": currency,
             "Market Cap": info.get('marketCap', 0),
             "Forward P/E": fwd_pe,
             "Avg Hist P/E": avg_historical_pe,
@@ -218,24 +202,20 @@ def run_analysis(tickers_list):
 col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
-    selected_index = st.selectbox(
-        "1. Choisir l'Indice", 
-        ["S&P 500", "Nasdaq 100", "CAC 40 (France)", "DAX 40 (Allemagne)"]
-    )
+    selected_index = st.selectbox("1. Choisir l'Indice", ["S&P 500", "Nasdaq 100", "CAC 40 (France)", "DAX 40 (Allemagne)"])
 
 with col2:
     if "CAC 40" in selected_index or "DAX" in selected_index:
         max_val = 40
-        default_val = 40
+        def_val = 40
     elif "Nasdaq" in selected_index:
         max_val = 100
-        default_val = 50
+        def_val = 50
     else:
         max_val = 500
-        default_val = 50
+        def_val = 50
         
-    nb_stocks = st.slider(f"2. Nombre d'actions (Max {max_val})", 
-                          min_value=5, max_value=max_val, value=default_val, step=5)
+    nb_stocks = st.slider(f"2. Nombre d'actions (Max {max_val})", 5, max_val, def_val, 5)
 
 with col3:
     st.write(" ")
@@ -246,13 +226,18 @@ if start_btn:
     
     top_tickers = get_top_tickers(selected_index, nb_stocks)
     
-    if not top_tickers:
-        st.error("Impossible de récupérer la liste. Essayez de relancer ou vérifiez votre connexion.")
-    else:
-        st.success(f"Cible identifiée : {len(top_tickers)} entreprises.")
+    if top_tickers:
+        st.success(f"Cible : {len(top_tickers)} entreprises.")
         df = run_analysis(top_tickers)
         
         if not df.empty:
+            
+            # --- NETTOYAGE VISUEL ---
+            # C'est ici qu'on retire les suffixes JUSTE pour l'affichage
+            # On remplace .PA et .DE par "rien" dans la colonne Ticker
+            df['Ticker'] = df['Ticker'].astype(str).str.replace('.PA', '', regex=False)
+            df['Ticker'] = df['Ticker'].astype(str).str.replace('.DE', '', regex=False)
+            
             st.divider()
             
             c1, c2 = st.columns(2)
@@ -296,7 +281,6 @@ if start_btn:
             
             # Tableau
             st.subheader("Données Détaillées")
-            
             currency_symbol = "€" if "France" in selected_index or "Allemagne" in selected_index else "$"
 
             def color_val(val):
@@ -318,4 +302,6 @@ if start_btn:
                 use_container_width=True
             )
         else:
-            st.warning("Aucune donnée disponible. Yahoo Finance peut manquer de données prévisionnelles (Forward P/E) sur certaines actions européennes aujourd'hui.")
+            st.warning("Aucune donnée disponible.")
+    else:
+        st.error("Erreur de récupération de liste.")
