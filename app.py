@@ -16,15 +16,15 @@ Analysez la valorisation historique (P/E vs Moyenne 5 ans) sur les marchés US e
 * **Rouge/Violet** = Surévalué (Risque ?)
 """)
 
-# --- 2. RÉCUPÉRATION ET FILTRAGE DYNAMIQUE ---
+# --- 2. RÉCUPÉRATION ET FILTRAGE DYNAMIQUE (CORRIGÉ) ---
 
 @st.cache_data(ttl=3600*24)
 def get_top_tickers(index_name, limit):
     """
-    Récupère les tickers, gère les suffixes régionaux (ex: .PA pour Paris),
+    Récupère les tickers, gère INTELLIGEMMENT les suffixes (évite le .PA.PA),
     trie par Market Cap et renvoie le Top 'limit'.
     """
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     status = st.empty()
     status.text(f"⏳ Récupération de la liste {index_name}...")
     
@@ -35,9 +35,10 @@ def get_top_tickers(index_name, limit):
         if index_name == "S&P 500":
             url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
             r = requests.get(url, headers=headers)
+            # Table 0 is usually S&P 500 components
             table = pd.read_html(StringIO(r.text))[0]
             tickers = table['Symbol'].tolist()
-            tickers = [t.replace('.', '-') for t in tickers] # Fix BRK.B
+            tickers = [t.replace('.', '-') for t in tickers] 
             
         elif index_name == "Nasdaq 100":
             url = "https://en.wikipedia.org/wiki/Nasdaq-100"
@@ -51,44 +52,66 @@ def get_top_tickers(index_name, limit):
                     tickers = t['Symbol'].tolist()
                     break
 
-        # --- EUROPE (Ajout des suffixes) ---
+        # --- EUROPE (CORRECTION DOUBLE SUFFIXE) ---
         elif index_name == "CAC 40 (France)":
             url = "https://en.wikipedia.org/wiki/CAC_40"
             r = requests.get(url, headers=headers)
             tables = pd.read_html(StringIO(r.text))
-            # La table des composants est souvent la 3ème ou 4ème
+            
+            raw_tickers = []
             for t in tables:
                 if 'Ticker' in t.columns:
                     raw_tickers = t['Ticker'].tolist()
-                    # AJOUT DU SUFFIXE .PA POUR YAHOO
-                    tickers = [f"{x}.PA" for x in raw_tickers]
                     break
+            
+            # Correction : On n'ajoute .PA que s'il n'est pas déjà là
+            tickers = []
+            for t in raw_tickers:
+                t = str(t).strip()
+                if t.endswith('.PA'):
+                    tickers.append(t)
+                else:
+                    tickers.append(f"{t}.PA")
         
         elif index_name == "DAX 40 (Allemagne)":
             url = "https://en.wikipedia.org/wiki/DAX"
             r = requests.get(url, headers=headers)
             tables = pd.read_html(StringIO(r.text))
+            
+            raw_tickers = []
             for t in tables:
                 if 'Ticker' in t.columns:
                     raw_tickers = t['Ticker'].tolist()
-                    # AJOUT DU SUFFIXE .DE POUR YAHOO
-                    tickers = [f"{x}.DE" for x in raw_tickers]
                     break
+            
+            # Correction : On n'ajoute .DE que s'il n'est pas déjà là
+            tickers = []
+            for t in raw_tickers:
+                t = str(t).strip()
+                if t.endswith('.DE'):
+                    tickers.append(t)
+                else:
+                    tickers.append(f"{t}.DE")
 
         # --- TRI PAR MARKET CAP ---
+        if not tickers:
+            st.error("Aucun ticker trouvé sur Wikipédia.")
+            return []
+
         status.text(f"⚡ Tri des {limit} plus grosses entreprises du {index_name}...")
         
         market_caps = {}
         
-        # Limite de sécurité si l'indice est petit (ex: CAC 40 a que 40 stocks)
-        if len(tickers) < limit:
-            limit = len(tickers)
+        # Sécurité pour les petits indices
+        safe_limit = min(limit, len(tickers))
 
+        # Batching
         batch_size = 50
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i+batch_size]
             for t in batch:
                 try:
+                    # fast_info est très rapide et léger
                     info = yf.Ticker(t).fast_info
                     mcap = info['market_cap']
                     if mcap:
@@ -96,7 +119,7 @@ def get_top_tickers(index_name, limit):
                 except:
                     continue
         
-        sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:limit]
+        sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:safe_limit]
         
         status.empty()
         return sorted_tickers
@@ -113,8 +136,14 @@ def get_historical_valuation(ticker):
         stock = yf.Ticker(ticker)
         info = stock.info
         
+        # Données de base
         sector = info.get('sector', 'Unknown')
         fwd_pe = info.get('forwardPE', None)
+        currency = info.get('currency', 'USD')
+        
+        # Si pas de Forward PE (fréquent en Europe), on tente le Trailing PE comme fallback
+        if fwd_pe is None:
+            fwd_pe = info.get('trailingPE', None)
         
         if fwd_pe is None: return None
 
@@ -128,6 +157,8 @@ def get_historical_valuation(ticker):
         
         eps_series = eps_data[eps_cols[0]].sort_index()
         
+        if eps_series.empty: return None
+
         start_date = eps_series.index.min().strftime('%Y-%m-%d')
         history = stock.history(start=start_date)
         
@@ -137,17 +168,18 @@ def get_historical_valuation(ticker):
             mask = history.index.year == year
             if not mask.any(): continue
             avg_price = history.loc[mask, 'Close'].mean()
-            # On accepte EPS > 0 pour le calcul P/E
+            
             if avg_price and eps > 0:
                 pe_ratios.append(avg_price / eps)
         
         if not pe_ratios: return None
             
         avg_historical_pe = sum(pe_ratios) / len(pe_ratios)
-        valuation_diff = (fwd_pe - avg_historical_pe) / avg_historical_pe
         
-        # On récupère la devise pour l'affichage (EUR ou USD)
-        currency = info.get('currency', 'USD')
+        # Sécurité division par zéro
+        if avg_historical_pe == 0: return None
+        
+        valuation_diff = (fwd_pe - avg_historical_pe) / avg_historical_pe
         
         return {
             "Ticker": ticker,
@@ -186,14 +218,12 @@ def run_analysis(tickers_list):
 col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
-    # LISTE DES INDICES DISPONIBLES
     selected_index = st.selectbox(
         "1. Choisir l'Indice", 
         ["S&P 500", "Nasdaq 100", "CAC 40 (France)", "DAX 40 (Allemagne)"]
     )
 
 with col2:
-    # GESTION INTELLIGENTE DU MAX SLIDER
     if "CAC 40" in selected_index or "DAX" in selected_index:
         max_val = 40
         default_val = 40
@@ -217,9 +247,9 @@ if start_btn:
     top_tickers = get_top_tickers(selected_index, nb_stocks)
     
     if not top_tickers:
-        st.error("Impossible de récupérer la liste de l'indice (Erreur Wikipedia ou Connexion).")
+        st.error("Impossible de récupérer la liste. Essayez de relancer ou vérifiez votre connexion.")
     else:
-        st.success(f"Cible : Top {len(top_tickers)} du {selected_index}.")
+        st.success(f"Cible identifiée : {len(top_tickers)} entreprises.")
         df = run_analysis(top_tickers)
         
         if not df.empty:
@@ -258,7 +288,7 @@ if start_btn:
             
             fig.update_traces(
                 textinfo="label+text",
-                hovertemplate="<b>%{label}</b><br>Diff Moyenne: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>"
+                hovertemplate="<b>%{label}</b><br>Diff Moyenne: %{color:.1f}%<br>P/E: %{customdata[1]}<extra></extra>"
             )
             
             fig.update_layout(height=750, margin=dict(t=30, l=10, r=10, b=10))
@@ -267,7 +297,6 @@ if start_btn:
             # Tableau
             st.subheader("Données Détaillées")
             
-            # On détecte la devise pour l'affichage propre dans le tableau
             currency_symbol = "€" if "France" in selected_index or "Allemagne" in selected_index else "$"
 
             def color_val(val):
@@ -289,4 +318,4 @@ if start_btn:
                 use_container_width=True
             )
         else:
-            st.warning("Aucune donnée disponible. Il est possible que Yahoo n'ait pas de prévisions (Forward P/E) pour ces actions européennes aujourd'hui.")
+            st.warning("Aucune donnée disponible. Yahoo Finance peut manquer de données prévisionnelles (Forward P/E) sur certaines actions européennes aujourd'hui.")
