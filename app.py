@@ -7,14 +7,14 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V17.1", layout="wide")
+st.set_page_config(page_title="Global Screener V17.2", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V17.1 - Correctif)")
+st.title("🌍 Ultimate Global Screener (V17.2 - PEG Calculé)")
 st.markdown("""
 **Analyse 360° : Valorisation + Croissance + Santé Financière**
 * **Onglet 1** : Historique (Value).
 * **Onglet 2** : Croissance (Growth).
-* **Tableau** : Indicateurs de Risque (Dette, Marge, PEG).
+* **Tableau** : PEG Ratio (Calculé dynamiquement si manquant).
 """)
 
 # --- 2. FONCTIONS DE SCRAPING ---
@@ -104,7 +104,7 @@ def get_top_tickers(index_name, limit):
     status.empty()
     return sorted_tickers
 
-# --- 3. ANALYSE PROFONDE ---
+# --- 3. ANALYSE PROFONDE (AVEC CALCUL PEG MANUEL) ---
 
 @st.cache_data(ttl=3600*12)
 def get_historical_valuation(ticker):
@@ -114,13 +114,20 @@ def get_historical_valuation(ticker):
         currency = info.get('currency', 'USD')
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         
-        # --- INDICATEURS ---
+        # Indicateurs
         growth = info.get('earningsGrowth', None)
         peg = info.get('pegRatio', None)
         debt_eq = info.get('debtToEquity', None)
         margins = info.get('profitMargins', None)
         
         if fwd_pe is None: return None
+        
+        # --- CALCUL DE SECOURS DU PEG ---
+        # Si Yahoo ne donne pas le PEG, mais qu'on a le PE et la Croissance, on le calcule.
+        if peg is None and fwd_pe is not None and growth is not None and growth > 0:
+            # Formule : PEG = PE / (Growth * 100)
+            # Ex: PE 20 / (0.10 * 100) = 20 / 10 = 2.0
+            peg = fwd_pe / (growth * 100)
 
         financials = stock.financials
         if financials.empty: return None
@@ -277,7 +284,6 @@ if 'data' in st.session_state:
     elif "Canada" in current_idx: cur = "C$ "
     elif "Inde" in current_idx: cur = "₹ "
 
-    # Fonction couleurs
     def color_premium(v):
         if pd.isna(v): return ''
         if v < -20: return 'color: blue; font-weight: bold'
@@ -298,10 +304,6 @@ if 'data' in st.session_state:
         if v < 50: return 'color: green'
         return ''
 
-    # --- LE CORRECTIF EST ICI ---
-    # On remplace les chaînes de format fixes par des fonctions sécurisées (lambda)
-    # Si x est un nombre valide (pd.notnull), on formate. Sinon, on met "-"
-    
     st.dataframe(
         df.sort_values("Premium/Discount").style
         .format({
