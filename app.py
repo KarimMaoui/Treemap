@@ -8,30 +8,27 @@ import re
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V11", layout="wide")
+st.set_page_config(page_title="Global Screener V12", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V11 - Stable)")
+st.title("🌍 Ultimate Global Screener (V12 - Analytics)")
 st.markdown("""
-**Scan de Valorisation Mondiale (P/E vs Moyenne Hist. 5 ans)**
-* 🇺🇸 **US** | 🇪🇺 **Europe** | 🇨🇦 **Canada** | 🇮🇳 **Inde** (Nouveau)
+**Analyse de Valorisation (P/E Actuel vs Historique)**
+* **Onglet 1** : Carte du marché (Treemap).
+* **Onglet 2** : Régression Linéaire (Corrélation P/E).
 """)
 
-# --- 2. FONCTION DE RÉCUPÉRATION ROBUSTE ---
+# --- 2. FONCTIONS DE SCRAPING ---
 
 def get_tickers_from_wikipedia(url, index_suffix=""):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        text_content = r.text
-        
-        # Lecture des tables HTML
-        tables = pd.read_html(StringIO(text_content))
+        tables = pd.read_html(StringIO(r.text))
         
         found_tickers = []
         possible_cols = ['Symbol', 'Ticker', 'Code', 'Security Symbol', 'Stock symbol', 'Securities Code']
         
         for df in tables:
-            # On cherche une colonne qui correspond
             col_match = None
             for col in df.columns:
                 if str(col).strip() in possible_cols:
@@ -42,15 +39,11 @@ def get_tickers_from_wikipedia(url, index_suffix=""):
                 raw_list = df[col_match].tolist()
                 for t in raw_list:
                     t = str(t).strip()
-                    # Ignorer les vides/nan
                     if t.lower() == "nan" or t == "": continue
                     
-                    # Gestion Canada (on ne met pas le suffixe tout de suite pour le traiter après)
                     if index_suffix == ".TO":
-                         if ".TO" in t: found_tickers.append(t)
-                         else: found_tickers.append(t) # On prend le ticker brut
-                    
-                    # Gestion Inde/Autres
+                        if ".TO" in t: found_tickers.append(t)
+                        else: found_tickers.append(t) 
                     else:
                         if index_suffix and not t.endswith(index_suffix):
                             t = f"{t}{index_suffix}"
@@ -58,7 +51,6 @@ def get_tickers_from_wikipedia(url, index_suffix=""):
                 
                 if len(found_tickers) > 10:
                     return found_tickers
-
         return found_tickers
     except Exception:
         return []
@@ -66,51 +58,35 @@ def get_tickers_from_wikipedia(url, index_suffix=""):
 @st.cache_data(ttl=3600*24)
 def get_top_tickers(index_name, limit):
     status = st.empty()
-    status.text(f"⏳ Récupération de la liste {index_name}...")
-    
+    status.text(f"⏳ Récupération liste : {index_name}...")
     tickers = []
     
-    # --- LOGIQUE DE SELECTION ---
     if index_name == "S&P 500 (USA)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", "")
         tickers = [t.replace('.', '-') for t in tickers]
-    
     elif index_name == "Nasdaq 100 (USA)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Nasdaq-100", "")
-    
     elif index_name == "TSX 60 (Canada)":
-        # Patch Canada (Conversion . en - et ajout .TO)
-        raw_tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/S%26P/TSX_60", ".TO")
+        raw = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/S%26P/TSX_60", ".TO")
         tickers = []
-        for t in raw_tickers:
+        for t in raw:
             if "nan" in t.lower(): continue
-            # Nettoyage : Si Wikipédia donne "RY.TO", on garde "RY". Si "RY", on garde "RY".
-            root = t.replace(".TO", "")
-            # Yahoo Canada utilise des tirets pour les classes (ex: CTC-A.TO)
-            root = root.replace(".", "-")
+            root = t.replace(".TO", "").replace(".", "-")
             tickers.append(f"{root}.TO")
-    
     elif index_name == "CAC 40 (France)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/CAC_40", ".PA")
-    
     elif index_name == "DAX 40 (Allemagne)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/DAX", ".DE")
-    
     elif index_name == "FTSE 100 (UK)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/FTSE_100_Index", ".L")
-    
     elif index_name == "SMI 20 (Suisse)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Swiss_Market_Index", ".SW")
-    
     elif index_name == "Nifty 50 (Inde)":
-        # L'Inde remplace le Japon
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Nifty_50", ".NS")
 
-    if not tickers:
-        return []
+    if not tickers: return []
 
-    status.text(f"⚡ Tri des {limit} plus grosses entreprises ({index_name})...")
-    
+    status.text(f"⚡ Tri des {limit} plus grosses entreprises...")
     market_caps = {}
     safe_limit = min(limit, len(tickers))
     batch_size = 50
@@ -121,10 +97,8 @@ def get_top_tickers(index_name, limit):
             try:
                 info = yf.Ticker(t).fast_info
                 mcap = info['market_cap']
-                if mcap:
-                    market_caps[t] = mcap
-            except:
-                continue
+                if mcap: market_caps[t] = mcap
+            except: continue
     
     sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:safe_limit]
     status.empty()
@@ -137,36 +111,28 @@ def get_historical_valuation(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        
         currency = info.get('currency', 'USD')
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         if fwd_pe is None: return None
 
         financials = stock.financials
         if financials.empty: return None
-            
         eps_data = financials.T 
         eps_cols = [c for c in eps_data.columns if 'EPS' in str(c) or 'Earnings' in str(c)]
         if not eps_cols: return None
-        
         eps_series = eps_data[eps_cols[0]].sort_index()
         if eps_series.empty: return None
 
         start_date = eps_series.index.min().strftime('%Y-%m-%d')
         history = stock.history(start=start_date)
-        
         pe_ratios = []
         for date, eps in eps_series.items():
             year = date.year
             mask = history.index.year == year
             if not mask.any(): continue
             avg_price = history.loc[mask, 'Close'].mean()
-            
-            # Correction Londres (GBp -> GBP)
             if currency == 'GBp': avg_price = avg_price / 100.0
-            
-            if avg_price and eps > 0:
-                pe_ratios.append(avg_price / eps)
+            if avg_price and eps > 0: pe_ratios.append(avg_price / eps)
         
         if not pe_ratios: return None
         avg_hist_pe = sum(pe_ratios) / len(pe_ratios)
@@ -183,8 +149,7 @@ def get_historical_valuation(ticker):
             "Avg Hist P/E": avg_hist_pe,
             "Premium/Discount": valuation_diff * 100
         }
-    except:
-        return None
+    except: return None
 
 def run_analysis(tickers):
     data = []
@@ -204,26 +169,15 @@ def run_analysis(tickers):
 # --- 4. INTERFACE ---
 
 c1, c2, c3 = st.columns([1, 1, 1])
-
 with c1:
-    indices = [
-        "S&P 500 (USA)", "Nasdaq 100 (USA)", 
-        "CAC 40 (France)", "DAX 40 (Allemagne)", 
-        "FTSE 100 (UK)", "SMI 20 (Suisse)",
-        "TSX 60 (Canada)", "Nifty 50 (Inde)"
-    ]
-    idx = st.selectbox("1. Choisir l'Indice", indices)
-
+    idx = st.selectbox("1. Indice", ["S&P 500 (USA)", "Nasdaq 100 (USA)", "CAC 40 (France)", "DAX 40 (Allemagne)", "FTSE 100 (UK)", "SMI 20 (Suisse)", "TSX 60 (Canada)", "Nifty 50 (Inde)"])
 with c2:
     if "SMI" in idx: max_v = 20
     elif "CAC" in idx or "DAX" in idx: max_v = 40
-    elif "TSX" in idx: max_v = 60
-    elif "Nifty" in idx: max_v = 50
+    elif "TSX" in idx or "Nifty" in idx: max_v = 50
     elif "Nasdaq" in idx or "FTSE" in idx: max_v = 100
     else: max_v = 500
-    
-    nb = st.slider(f"2. Nombre d'actions (Max {max_v})", 5, max_v, min(50, max_v), 5)
-
+    nb = st.slider(f"2. Max Actions ({max_v})", 5, max_v, min(50, max_v), 5)
 with c3:
     st.write(" ")
     st.write(" ")
@@ -241,21 +195,62 @@ if btn:
                 df['Ticker'] = df['Ticker'].astype(str).str.replace(suffix, '', regex=False)
             
             st.divider()
-            col_a, col_b = st.columns(2)
-            col_a.metric("Actions", len(df))
-            med = df['Premium/Discount'].median()
-            col_b.metric("Valorisation Médiane", f"{med:+.1f}%", delta_color="inverse")
             
+            # --- ONGLETS (TABS) ---
+            tab1, tab2 = st.tabs(["🗺️ Treemap", "📈 Régression Linéaire"])
+            
+            # Palette commune
             scale = ["#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"]
-            fig = px.treemap(
-                df, path=[px.Constant(idx), 'Sector', 'Ticker'], values='Market Cap', color='Premium/Discount',
-                color_continuous_scale=scale, range_color=[-80, 80],
-                hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
-            )
-            fig.update_traces(textinfo="label+text", hovertemplate="<b>%{label}</b><br>Diff Moy: %{color:.1f}%<br>P/E: %{customdata[1]}<extra></extra>")
-            fig.update_layout(height=750, margin=dict(t=30, l=10, r=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
             
+            # --- TAB 1 : TREEMAP ---
+            with tab1:
+                st.subheader(f"Carte Thermique : {idx}")
+                fig_tree = px.treemap(
+                    df, path=[px.Constant(idx), 'Sector', 'Ticker'], values='Market Cap', color='Premium/Discount',
+                    color_continuous_scale=scale, range_color=[-80, 80],
+                    hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
+                )
+                fig_tree.update_traces(textinfo="label+text", hovertemplate="<b>%{label}</b><br>Diff: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>")
+                fig_tree.update_layout(height=700, margin=dict(t=20, l=10, r=10, b=10))
+                st.plotly_chart(fig_tree, use_container_width=True)
+
+            # --- TAB 2 : REGRESSION ---
+            with tab2:
+                st.subheader("Régression : P/E Actuel vs P/E Historique")
+                st.caption("• Axe X : P/E Historique (Moyenne 5 ans) | • Axe Y : Forward P/E (Actuel)")
+                st.caption("• Taille des points : Market Cap | • Couleur : Premium/Discount")
+                
+                # Gestion des outliers extrêmes pour le graphique (max P/E 100 pour lisibilité)
+                df_clean = df[(df['Forward P/E'] < 150) & (df['Avg Hist P/E'] < 150)]
+                
+                fig_scatter = px.scatter(
+                    df_clean, 
+                    x="Avg Hist P/E", 
+                    y="Forward P/E",
+                    size="Market Cap", 
+                    color="Premium/Discount",
+                    color_continuous_scale=scale,
+                    range_color=[-80, 80],
+                    text="Ticker",
+                    hover_name="Name",
+                    trendline="ols", # Ligne de régression linéaire
+                    trendline_color_override="red"
+                )
+                
+                # Ajout de la ligne d'identité (y=x) pour repère visuel "Juste Prix"
+                max_val = max(df_clean['Forward P/E'].max(), df_clean['Avg Hist P/E'].max())
+                fig_scatter.add_shape(
+                    type="line", line=dict(dash='dash', color='gray'),
+                    x0=0, y0=0, x1=max_val, y1=max_val
+                )
+                fig_scatter.add_annotation(x=max_val*0.8, y=max_val*0.8, text="Prix Historique (y=x)", showarrow=False, font=dict(color="gray"))
+
+                fig_scatter.update_traces(textposition='top center')
+                fig_scatter.update_layout(height=700)
+                st.plotly_chart(fig_scatter, use_container_width=True)
+
+            # TABLEAU
+            st.divider()
             st.subheader("Données Détaillées")
             cur = "$"
             if "France" in idx or "Allemagne" in idx: cur = "€"
@@ -277,5 +272,5 @@ if btn:
                 }).map(color, subset=['Premium/Discount']),
                 use_container_width=True
             )
-        else: st.warning("Pas de données complètes trouvées.")
-    else: st.error("Impossible de récupérer la liste des tickers (Problème Wikipedia).")
+        else: st.warning("Données incomplètes.")
+    else: st.error("Erreur liste.")
