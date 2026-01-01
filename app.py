@@ -8,13 +8,12 @@ import re
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V14", layout="wide")
+st.set_page_config(page_title="Global Screener V15", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V14 - Stable)")
+st.title("🌍 Ultimate Global Screener (V15 - Persistant)")
 st.markdown("""
 **Scan de Valorisation Mondiale & Analyse de Régression**
-* **Onglet 1** : Treemap (Vue d'ensemble).
-* **Onglet 2** : Régression (Comparaison P/E vs Secteur/Historique).
+* Les données restent en mémoire lors du filtrage par secteur.
 """)
 
 # --- 2. FONCTIONS DE SCRAPING ROBUSTE ---
@@ -184,129 +183,139 @@ with c3:
     st.write(" ")
     btn = st.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True)
 
+# --- 5. LOGIQUE DE PERSISTANCE (SESSION STATE) ---
+
+# Si le bouton est cliqué, on lance l'analyse et on SAUVEGARDE dans la session
 if btn:
     top = get_top_tickers(idx, nb)
     if top:
         st.success(f"Cible : {len(top)} entreprises.")
-        df = run_analysis(top)
+        df_result = run_analysis(top)
         
-        if not df.empty:
-            # NETTOYAGE VISUEL
+        if not df_result.empty:
+            # NETTOYAGE VISUEL AVANT SAUVEGARDE
             for suffix in ['.PA', '.DE', '.L', '.TO', '.SW', '.NS']:
-                df['Ticker'] = df['Ticker'].astype(str).str.replace(suffix, '', regex=False)
+                df_result['Ticker'] = df_result['Ticker'].astype(str).str.replace(suffix, '', regex=False)
             
-            st.divider()
+            # CALCUL MÉDIANES AVANT SAUVEGARDE
+            df_result['Sector Median P/E'] = df_result.groupby('Sector')['Forward P/E'].transform('median')
             
-            # --- CALCUL PRÉALABLE DES MÉDIANES SECTORIELLES ---
-            # On calcule la médiane du secteur pour TOUTES les actions AVANT de filtrer
-            df['Sector Median P/E'] = df.groupby('Sector')['Forward P/E'].transform('median')
+            # Sauvegarde dans la mémoire persistante
+            st.session_state['data'] = df_result
+            st.session_state['index_name'] = idx
+        else:
+            st.warning("Données incomplètes.")
+    else:
+        st.error("Erreur liste.")
 
-            tab1, tab2 = st.tabs(["🗺️ Treemap Globale", "📈 Régression & P/E"])
+# --- 6. AFFICHAGE (Basé sur la mémoire, pas sur le bouton) ---
+
+if 'data' in st.session_state:
+    df = st.session_state['data']
+    current_idx = st.session_state['index_name']
+    
+    st.divider()
+    
+    tab1, tab2 = st.tabs(["🗺️ Treemap Globale", "📈 Régression & P/E"])
+    
+    scale = ["#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"]
+    
+    # --- TAB 1 : TREEMAP ---
+    with tab1:
+        st.subheader(f"Carte Thermique : {current_idx}")
+        fig_tree = px.treemap(
+            df, path=[px.Constant(current_idx), 'Sector', 'Ticker'], values='Market Cap', color='Premium/Discount',
+            color_continuous_scale=scale, range_color=[-80, 80],
+            hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'Sector Median P/E':':.1f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
+        )
+        fig_tree.update_traces(textinfo="label+text", hovertemplate="<b>%{label}</b><br>Diff: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>")
+        fig_tree.update_layout(height=700, margin=dict(t=20, l=10, r=10, b=10))
+        st.plotly_chart(fig_tree, use_container_width=True)
+
+    # --- TAB 2 : REGRESSION ---
+    with tab2:
+        col_sel1, col_sel2 = st.columns([1, 3])
+        
+        # MENU DÉROULANT (Qui ne fait plus crasher l'app !)
+        all_sectors = sorted(df['Sector'].unique().tolist())
+        selected_sector = col_sel1.selectbox("🔎 Filtrer par Secteur", ["Tous"] + all_sectors)
+        
+        # FILTRAGE
+        if selected_sector != "Tous":
+            df_show = df[df['Sector'] == selected_sector]
             
-            scale = ["#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"]
+            # Pour secteur unique -> X = P/E Historique
+            x_axis_col = "Avg Hist P/E"
+            x_axis_title = f"P/E Historique ({selected_sector})"
+            chart_title = f"Analyse : {selected_sector} (Comparaison Historique)"
             
-            # --- TAB 1 : TREEMAP ---
-            with tab1:
-                st.subheader(f"Carte Thermique : {idx}")
-                fig_tree = px.treemap(
-                    df, path=[px.Constant(idx), 'Sector', 'Ticker'], values='Market Cap', color='Premium/Discount',
-                    color_continuous_scale=scale, range_color=[-80, 80],
-                    hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'Sector Median P/E':':.1f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
-                )
-                fig_tree.update_traces(textinfo="label+text", hovertemplate="<b>%{label}</b><br>Diff: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>")
-                fig_tree.update_layout(height=700, margin=dict(t=20, l=10, r=10, b=10))
-                st.plotly_chart(fig_tree, use_container_width=True)
+            current_median = df_show['Sector Median P/E'].iloc[0] if not df_show.empty else 0
+            col_sel2.info(f"Médiane du secteur {selected_sector} : **{current_median:.1f}x**")
+            
+        else:
+            df_show = df
+            # Vue Globale -> X = Médiane Secteur
+            x_axis_col = "Sector Median P/E"
+            x_axis_title = "Médiane P/E du Secteur"
+            chart_title = "Vue Globale : Comparaison Inter-Sectorielle"
 
-            # --- TAB 2 : REGRESSION (CORRECTION CRASH) ---
-            with tab2:
-                col_sel1, col_sel2 = st.columns([1, 3])
-                
-                # MENU DÉROULANT
-                all_sectors = sorted(df['Sector'].unique().tolist())
-                selected_sector = col_sel1.selectbox("🔎 Filtrer par Secteur", ["Tous"] + all_sectors)
-                
-                # FILTRAGE
-                if selected_sector != "Tous":
-                    df_show = df[df['Sector'] == selected_sector]
-                    
-                    # LOGIQUE ANTI-CRASH : 
-                    # Pour un secteur unique, X = Median est impossible (ligne verticale).
-                    # On bascule X sur 'Avg Hist P/E' pour voir la corrélation interne.
-                    x_axis_col = "Avg Hist P/E"
-                    x_axis_title = f"P/E Historique ({selected_sector})"
-                    chart_title = f"Analyse : {selected_sector} (Points au-dessus de la ligne = Chers)"
-                    
-                    # On affiche quand même la médiane en info
-                    current_median = df_show['Sector Median P/E'].iloc[0] if not df_show.empty else 0
-                    col_sel2.info(f"Médiane du secteur {selected_sector} : **{current_median:.1f}x**")
-                    
-                else:
-                    df_show = df
-                    # VUE GLOBALE : Ici on peut utiliser la médiane secteur en X comme demandé !
-                    x_axis_col = "Sector Median P/E"
-                    x_axis_title = "Médiane P/E du Secteur"
-                    chart_title = "Vue Globale : Est-ce que les secteurs chers sont surévalués ?"
+        # SÉCURITÉ OLS
+        use_trendline = None
+        if len(df_show) > 2 and df_show[x_axis_col].nunique() > 1:
+            use_trendline = "ols"
 
-                # SÉCURITÉ OLS (Empêche le crash si pas assez de données)
-                # Il faut au moins 2 points et que X ne soit pas constant
-                use_trendline = None
-                if len(df_show) > 2 and df_show[x_axis_col].nunique() > 1:
-                    use_trendline = "ols"
-
-                # GRAPHIQUE
-                if not df_show.empty:
-                    fig_scatter = px.scatter(
-                        df_show, 
-                        x=x_axis_col, 
-                        y="Forward P/E",
-                        size="Market Cap", 
-                        color="Premium/Discount",
-                        color_continuous_scale=scale,
-                        range_color=[-80, 80],
-                        text="Ticker",
-                        hover_name="Name",
-                        trendline=use_trendline,
-                        trendline_color_override="red",
-                        title=chart_title
-                    )
-                    
-                    # Ligne de référence (y=x) utile pour le mode historique
-                    if x_axis_col == "Avg Hist P/E":
-                        max_val = max(df_show['Forward P/E'].max(), df_show['Avg Hist P/E'].max())
-                        fig_scatter.add_shape(type="line", line=dict(dash='dash', color='gray'), x0=0, y0=0, x1=max_val, y1=max_val)
-
-                    fig_scatter.update_traces(textposition='top center')
-                    fig_scatter.update_layout(
-                        height=650, 
-                        xaxis_title=x_axis_title, 
-                        yaxis_title="Forward P/E (Actuel)"
-                    )
-                    st.plotly_chart(fig_scatter, use_container_width=True)
-                else:
-                    st.warning("Pas assez de données pour ce secteur.")
-
-            # TABLEAU
-            st.divider()
-            st.subheader("Données Détaillées")
-            cur = "$"
-            if "France" in idx or "Allemagne" in idx: cur = "€"
-            elif "UK" in idx: cur = "£"
-            elif "Suisse" in idx: cur = "CHF "
-            elif "Canada" in idx: cur = "C$ "
-            elif "Inde" in idx: cur = "₹ "
-
-            def color(v):
-                if v < -20: return 'color: blue; font-weight: bold'
-                if v < 0: return 'color: green'
-                if v > 40: return 'color: red; font-weight: bold'
-                if v > 0: return 'color: orange'
-                return 'color: black'
-
-            st.dataframe(
-                df.sort_values("Premium/Discount").style.format({
-                    "Market Cap": cur + "{:,.0f}", "Forward P/E": "{:.1f}", "Avg Hist P/E": "{:.1f}", "Sector Median P/E": "{:.1f}", "Premium/Discount": "{:+.1f}%"
-                }).map(color, subset=['Premium/Discount']),
-                use_container_width=True
+        # GRAPHIQUE
+        if not df_show.empty:
+            fig_scatter = px.scatter(
+                df_show, 
+                x=x_axis_col, 
+                y="Forward P/E",
+                size="Market Cap", 
+                color="Premium/Discount",
+                color_continuous_scale=scale,
+                range_color=[-80, 80],
+                text="Ticker",
+                hover_name="Name",
+                trendline=use_trendline,
+                trendline_color_override="red",
+                title=chart_title
             )
-        else: st.warning("Données incomplètes.")
-    else: st.error("Erreur liste.")
+            
+            # Ligne de référence (y=x) si mode historique
+            if x_axis_col == "Avg Hist P/E":
+                max_val = max(df_show['Forward P/E'].max(), df_show['Avg Hist P/E'].max())
+                fig_scatter.add_shape(type="line", line=dict(dash='dash', color='gray'), x0=0, y0=0, x1=max_val, y1=max_val)
+
+            fig_scatter.update_traces(textposition='top center')
+            fig_scatter.update_layout(
+                height=650, 
+                xaxis_title=x_axis_title, 
+                yaxis_title="Forward P/E (Actuel)"
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+        else:
+            st.warning("Pas assez de données pour ce secteur.")
+
+    # TABLEAU
+    st.divider()
+    st.subheader("Données Détaillées")
+    cur = "$"
+    if "France" in current_idx or "Allemagne" in current_idx: cur = "€"
+    elif "UK" in current_idx: cur = "£"
+    elif "Suisse" in current_idx: cur = "CHF "
+    elif "Canada" in current_idx: cur = "C$ "
+    elif "Inde" in current_idx: cur = "₹ "
+
+    def color(v):
+        if v < -20: return 'color: blue; font-weight: bold'
+        if v < 0: return 'color: green'
+        if v > 40: return 'color: red; font-weight: bold'
+        if v > 0: return 'color: orange'
+        return 'color: black'
+
+    st.dataframe(
+        df.sort_values("Premium/Discount").style.format({
+            "Market Cap": cur + "{:,.0f}", "Forward P/E": "{:.1f}", "Avg Hist P/E": "{:.1f}", "Sector Median P/E": "{:.1f}", "Premium/Discount": "{:+.1f}%"
+        }).map(color, subset=['Premium/Discount']),
+        use_container_width=True
+    )
