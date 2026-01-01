@@ -7,23 +7,21 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Clean Market Screener", layout="wide")
+st.set_page_config(page_title="Ultimate Market Screener", layout="wide")
 
-st.title("🌍 Global Market Screener : US & Europe")
+st.title("🌍 Ultimate Global Screener")
 st.markdown("""
-Analysez la valorisation (P/E vs Moyenne 5 ans).
-* **Bleu/Vert** = Sous-évalué (Opportunité ?)
-* **Rouge/Violet** = Surévalué (Risque ?)
+**Scan de Valorisation Mondiale (P/E vs Moyenne Hist. 5 ans)**
+* 🇺🇸 **US** (S&P 500, Nasdaq)
+* 🇪🇺 **Europe** (CAC 40, DAX, FTSE 100, SMI)
+* 🇨🇦 **Canada** (TSX 60)
+* 🇯🇵 **Japon** (Nikkei 225)
 """)
 
 # --- 2. RÉCUPÉRATION ET FILTRAGE DYNAMIQUE ---
 
 @st.cache_data(ttl=3600*24)
 def get_top_tickers(index_name, limit):
-    """
-    Récupère les tickers avec les bons suffixes pour le calcul,
-    mais on s'occupera du nettoyage visuel plus tard.
-    """
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     status = st.empty()
     status.text(f"⏳ Récupération de la liste {index_name}...")
@@ -31,15 +29,14 @@ def get_top_tickers(index_name, limit):
     tickers = []
     
     try:
-        # --- ETATS-UNIS ---
-        if index_name == "S&P 500":
+        # --- AMÉRIQUE DU NORD ---
+        if index_name == "S&P 500 (USA)":
             url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
             r = requests.get(url, headers=headers)
             table = pd.read_html(StringIO(r.text))[0]
-            tickers = table['Symbol'].tolist()
-            tickers = [t.replace('.', '-') for t in tickers] 
-            
-        elif index_name == "Nasdaq 100":
+            tickers = [t.replace('.', '-') for t in table['Symbol'].tolist()]
+
+        elif index_name == "Nasdaq 100 (USA)":
             url = "https://en.wikipedia.org/wiki/Nasdaq-100"
             r = requests.get(url, headers=headers)
             tables = pd.read_html(StringIO(r.text))
@@ -47,53 +44,79 @@ def get_top_tickers(index_name, limit):
                 if 'Ticker' in t.columns:
                     tickers = t['Ticker'].tolist()
                     break
-                if 'Symbol' in t.columns:
-                    tickers = t['Symbol'].tolist()
-                    break
 
-        # --- EUROPE (Avec suffixes pour Yahoo) ---
+        elif index_name == "TSX 60 (Canada)":
+            url = "https://en.wikipedia.org/wiki/S%26P/TSX_60"
+            r = requests.get(url, headers=headers)
+            table = pd.read_html(StringIO(r.text))[0]
+            # Wiki donne souvent 'RY', Yahoo veut 'RY.TO'
+            raw_tickers = table['Symbol'].tolist()
+            tickers = [f"{t}.TO" if not str(t).endswith('.TO') else t for t in raw_tickers]
+
+        # --- EUROPE ---
         elif index_name == "CAC 40 (France)":
             url = "https://en.wikipedia.org/wiki/CAC_40"
             r = requests.get(url, headers=headers)
             tables = pd.read_html(StringIO(r.text))
-            
-            raw_tickers = []
             for t in tables:
                 if 'Ticker' in t.columns:
-                    raw_tickers = t['Ticker'].tolist()
+                    raw = t['Ticker'].tolist()
+                    tickers = [f"{x}.PA" if not str(x).endswith('.PA') else x for x in raw]
                     break
-            
-            tickers = []
-            for t in raw_tickers:
-                t = str(t).strip()
-                if t.endswith('.PA'):
-                    tickers.append(t)
-                else:
-                    tickers.append(f"{t}.PA")
         
         elif index_name == "DAX 40 (Allemagne)":
             url = "https://en.wikipedia.org/wiki/DAX"
             r = requests.get(url, headers=headers)
             tables = pd.read_html(StringIO(r.text))
-            
-            raw_tickers = []
             for t in tables:
                 if 'Ticker' in t.columns:
-                    raw_tickers = t['Ticker'].tolist()
+                    raw = t['Ticker'].tolist()
+                    tickers = [f"{x}.DE" if not str(x).endswith('.DE') else x for x in raw]
                     break
-            
-            tickers = []
-            for t in raw_tickers:
-                t = str(t).strip()
-                if t.endswith('.DE'):
-                    tickers.append(t)
-                else:
-                    tickers.append(f"{t}.DE")
+                    
+        elif index_name == "FTSE 100 (Royaume-Uni)":
+            url = "https://en.wikipedia.org/wiki/FTSE_100_Index"
+            r = requests.get(url, headers=headers)
+            table = pd.read_html(StringIO(r.text))[4] # Souvent la table 4 ou chercher 'Ticker'
+            # Fallback recherche table
+            if 'Ticker' not in table.columns:
+                 tables = pd.read_html(StringIO(r.text))
+                 for t in tables:
+                     if 'Ticker' in t.columns:
+                         table = t
+                         break
+            raw = table['Ticker'].tolist()
+            # Yahoo suffixe .L pour Londres
+            tickers = [f"{x}.L" if not str(x).endswith('.L') else x for x in raw]
 
-        # --- TRI PAR MARKET CAP ---
+        elif index_name == "SMI 20 (Suisse)":
+            url = "https://en.wikipedia.org/wiki/Swiss_Market_Index"
+            r = requests.get(url, headers=headers)
+            tables = pd.read_html(StringIO(r.text))
+            for t in tables:
+                if 'Ticker' in t.columns:
+                    raw = t['Ticker'].tolist()
+                    # Yahoo suffixe .SW pour Swiss Exchange
+                    tickers = [f"{x}.SW" for x in raw] 
+                    break
+
+        # --- ASIE ---
+        elif index_name == "Nikkei 225 (Japon)":
+            url = "https://en.wikipedia.org/wiki/Nikkei_225"
+            r = requests.get(url, headers=headers)
+            tables = pd.read_html(StringIO(r.text))
+            # Table souvent complexe, on cherche celle avec "Symbol" ou "Code"
+            raw = []
+            for t in tables:
+                if 'Symbol' in t.columns:
+                    raw = t['Symbol'].tolist()
+                    break
+            # Yahoo veut '7203.T' pour Tokyo
+            tickers = [f"{x}.T" for x in raw]
+
+        # --- TRI & BATCHING ---
         if not tickers: return []
-
-        status.text(f"⚡ Tri des {limit} plus grosses entreprises du {index_name}...")
+        status.text(f"⚡ Tri des {limit} plus grosses entreprises ({index_name})...")
         
         market_caps = {}
         safe_limit = min(limit, len(tickers))
@@ -126,16 +149,9 @@ def get_historical_valuation(ticker):
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        sector = info.get('sector', 'Unknown')
-        fwd_pe = info.get('forwardPE', None)
-        
-        # Fallback Trailing PE si Forward manquant (fréquent en Europe)
-        if fwd_pe is None:
-            fwd_pe = info.get('trailingPE', None)
-        
+        fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         if fwd_pe is None: return None
 
-        # Historique
         financials = stock.financials
         if financials.empty: return None
             
@@ -155,153 +171,121 @@ def get_historical_valuation(ticker):
             mask = history.index.year == year
             if not mask.any(): continue
             avg_price = history.loc[mask, 'Close'].mean()
-            
             if avg_price and eps > 0:
                 pe_ratios.append(avg_price / eps)
         
         if not pe_ratios: return None
-            
-        avg_historical_pe = sum(pe_ratios) / len(pe_ratios)
-        if avg_historical_pe == 0: return None
+        avg_hist_pe = sum(pe_ratios) / len(pe_ratios)
+        if avg_hist_pe == 0: return None
         
-        valuation_diff = (fwd_pe - avg_historical_pe) / avg_historical_pe
+        valuation_diff = (fwd_pe - avg_hist_pe) / avg_hist_pe
         
         return {
-            "Ticker": ticker, # On garde le ticker technique ici (ex: MC.PA)
+            "Ticker": ticker,
             "Name": info.get('shortName', ticker),
-            "Sector": sector,
+            "Sector": info.get('sector', 'Unknown'),
             "Market Cap": info.get('marketCap', 0),
             "Forward P/E": fwd_pe,
-            "Avg Hist P/E": avg_historical_pe,
+            "Avg Hist P/E": avg_hist_pe,
             "Premium/Discount": valuation_diff * 100
         }
-
-    except Exception:
+    except:
         return None
 
-def run_analysis(tickers_list):
+def run_analysis(tickers):
     data = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    total = len(tickers_list)
-    
-    for i, ticker in enumerate(tickers_list):
-        status_text.text(f"Analyse en cours : {ticker} ({i+1}/{total})")
-        res = get_historical_valuation(ticker)
-        if res:
-            data.append(res)
-        time.sleep(0.05) 
-        progress_bar.progress((i + 1) / total)
-    
-    progress_bar.empty()
-    status_text.empty()
+    bar = st.progress(0)
+    status = st.empty()
+    total = len(tickers)
+    for i, t in enumerate(tickers):
+        status.text(f"Analyse : {t} ({i+1}/{total})")
+        res = get_historical_valuation(t)
+        if res: data.append(res)
+        time.sleep(0.05)
+        bar.progress((i+1)/total)
+    bar.empty()
+    status.empty()
     return pd.DataFrame(data)
 
 # --- 4. INTERFACE ---
 
-col1, col2, col3 = st.columns([1, 1, 1])
+c1, c2, c3 = st.columns([1, 1, 1])
 
-with col1:
-    selected_index = st.selectbox("1. Choisir l'Indice", ["S&P 500", "Nasdaq 100", "CAC 40 (France)", "DAX 40 (Allemagne)"])
+with c1:
+    indices = [
+        "S&P 500 (USA)", "Nasdaq 100 (USA)", 
+        "CAC 40 (France)", "DAX 40 (Allemagne)", 
+        "FTSE 100 (Royaume-Uni)", "SMI 20 (Suisse)",
+        "TSX 60 (Canada)", "Nikkei 225 (Japon)"
+    ]
+    idx = st.selectbox("1. Choisir l'Indice", indices)
 
-with col2:
-    if "CAC 40" in selected_index or "DAX" in selected_index:
-        max_val = 40
-        def_val = 40
-    elif "Nasdaq" in selected_index:
-        max_val = 100
-        def_val = 50
-    else:
-        max_val = 500
-        def_val = 50
-        
-    nb_stocks = st.slider(f"2. Nombre d'actions (Max {max_val})", 5, max_val, def_val, 5)
+with c2:
+    # Réglage auto du slider selon la taille de l'indice
+    if "SMI" in idx: max_v = 20
+    elif "CAC" in idx or "DAX" in idx: max_v = 40
+    elif "TSX" in idx: max_v = 60
+    elif "Nasdaq" in idx or "FTSE" in idx: max_v = 100
+    elif "Nikkei" in idx: max_v = 225
+    else: max_v = 500
+    
+    nb = st.slider(f"2. Nombre d'actions (Max {max_v})", 5, max_v, min(50, max_v), 5)
 
-with col3:
+with c3:
     st.write(" ")
     st.write(" ")
-    start_btn = st.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True)
+    btn = st.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True)
 
-if start_btn:
-    
-    top_tickers = get_top_tickers(selected_index, nb_stocks)
-    
-    if top_tickers:
-        st.success(f"Cible : {len(top_tickers)} entreprises.")
-        df = run_analysis(top_tickers)
+if btn:
+    top = get_top_tickers(idx, nb)
+    if top:
+        st.success(f"Cible : {len(top)} entreprises.")
+        df = run_analysis(top)
         
         if not df.empty:
-            
-            # --- NETTOYAGE VISUEL ---
-            # C'est ici qu'on retire les suffixes JUSTE pour l'affichage
-            # On remplace .PA et .DE par "rien" dans la colonne Ticker
-            df['Ticker'] = df['Ticker'].astype(str).str.replace('.PA', '', regex=False)
-            df['Ticker'] = df['Ticker'].astype(str).str.replace('.DE', '', regex=False)
+            # NETTOYAGE VISUEL (On retire tous les suffixes possibles)
+            for suffix in ['.PA', '.DE', '.L', '.TO', '.SW', '.T']:
+                df['Ticker'] = df['Ticker'].astype(str).str.replace(suffix, '', regex=False)
             
             st.divider()
-            
-            c1, c2 = st.columns(2)
-            c1.metric("Actions Analysées", len(df))
+            col_a, col_b = st.columns(2)
+            col_a.metric("Actions", len(df))
             med = df['Premium/Discount'].median()
-            c2.metric("Valorisation Médiane", f"{med:+.1f}%", 
-                      delta="Bon marché" if med < 0 else "Cher", delta_color="inverse")
-
-            # --- TREEMAP ---
-            custom_scale = [
-                "#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", 
-                "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"
-            ]
-
-            st.subheader(f"🗺️ Carte Thermique : {selected_index}")
+            col_b.metric("Valorisation Médiane", f"{med:+.1f}%", delta_color="inverse")
             
+            # TREEMAP
+            scale = ["#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"]
             fig = px.treemap(
-                df,
-                path=[px.Constant(selected_index), 'Sector', 'Ticker'],
-                values='Market Cap',
-                color='Premium/Discount',
-                color_continuous_scale=custom_scale,
-                range_color=[-80, 80],
-                hover_data={
-                    'Premium/Discount': ':.1f%',
-                    'Forward P/E': ':.1f',
-                    'Avg Hist P/E': ':.1f',
-                    'Market Cap': False,
-                    'Sector': False,
-                    'Ticker': False
-                }
+                df, path=[px.Constant(idx), 'Sector', 'Ticker'], values='Market Cap', color='Premium/Discount',
+                color_continuous_scale=scale, range_color=[-80, 80],
+                hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
             )
-            
-            fig.update_traces(
-                textinfo="label+text",
-                hovertemplate="<b>%{label}</b><br>Diff Moyenne: %{color:.1f}%<br>P/E: %{customdata[1]}<extra></extra>"
-            )
-            
+            fig.update_traces(textinfo="label+text", hovertemplate="<b>%{label}</b><br>Diff Moy: %{color:.1f}%<br>P/E: %{customdata[1]}<extra></extra>")
             fig.update_layout(height=750, margin=dict(t=30, l=10, r=10, b=10))
             st.plotly_chart(fig, use_container_width=True)
             
-            # Tableau
+            # TABLEAU
             st.subheader("Données Détaillées")
-            currency_symbol = "€" if "France" in selected_index or "Allemagne" in selected_index else "$"
+            # Gestion Devise
+            cur = "$"
+            if "France" in idx or "Allemagne" in idx: cur = "€"
+            elif "Royaume" in idx: cur = "£"
+            elif "Suisse" in idx: cur = "CHF "
+            elif "Japon" in idx: cur = "¥"
+            elif "Canada" in idx: cur = "C$ "
 
-            def color_val(val):
-                if val < -20: return 'color: blue; font-weight: bold'
-                if val < 0: return 'color: green'
-                if val > 40: return 'color: red; font-weight: bold'
-                if val > 0: return 'color: orange'
+            def color(v):
+                if v < -20: return 'color: blue; font-weight: bold'
+                if v < 0: return 'color: green'
+                if v > 40: return 'color: red; font-weight: bold'
+                if v > 0: return 'color: orange'
                 return 'color: black'
 
             st.dataframe(
-                df.sort_values("Premium/Discount").style
-                .format({
-                    "Market Cap": currency_symbol + "{:,.0f}",
-                    "Forward P/E": "{:.1f}",
-                    "Avg Hist P/E": "{:.1f}",
-                    "Premium/Discount": "{:+.1f}%"
-                })
-                .map(color_val, subset=['Premium/Discount']),
+                df.sort_values("Premium/Discount").style.format({
+                    "Market Cap": cur + "{:,.0f}", "Forward P/E": "{:.1f}", "Avg Hist P/E": "{:.1f}", "Premium/Discount": "{:+.1f}%"
+                }).map(color, subset=['Premium/Discount']),
                 use_container_width=True
             )
-        else:
-            st.warning("Aucune donnée disponible.")
-    else:
-        st.error("Erreur de récupération de liste.")
+        else: st.warning("Pas de données complètes trouvées.")
+    else: st.error("Erreur de liste.")
