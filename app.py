@@ -147,18 +147,25 @@ if st.button('🚀 Lancer le Market Screen', type="primary"):
 
         # --- TREEMAP CONFIGURATION ---
         
-        # Échelle de couleurs personnalisée (5 étapes)
-        # Vert Foncé -> Vert Clair -> Gris (Neutre) -> Orange -> Rouge Foncé
+       # --- TREEMAP CONFIGURATION ---
+        
+        # Échelle à 10 couleurs distinctes pour bien discriminer les zones
+        # Du "Froid/Pas cher" (Bleu) vers le "Brûlant/Cher" (Rouge/Violet)
         custom_scale = [
-            '#004d00',  # -80 (Très sous-évalué)
-            '#32CD32',  # -40 (Sous-évalué)
-            '#F0F0F0',  # 0   (Juste prix / Gris clair)
-            '#FF8C00',  # +40 (Surévalué)
-            '#8B0000'   # +80 (Très surévalué)
+            "#00008B", # 1. Bleu Nuit   (-80%) : Opportunité extrême
+            "#0000FF", # 2. Bleu        (-60%) : Très sous-évalué
+            "#00BFFF", # 3. Cyan        (-40%) : Sous-évalué
+            "#2E8B57", # 4. Vert Mer    (-20%) : Bon prix
+            "#32CD32", # 5. Vert Lime   ( -5%) : Légère décote
+            "#FFFF00", # 6. Jaune       ( +5%) : Prix Juste / Légère prime
+            "#FFD700", # 7. Or          (+20%) : Commence à être cher
+            "#FF8C00", # 8. Orange Foncé(+40%) : Cher
+            "#FF0000", # 9. Rouge       (+60%) : Très cher
+            "#800080"  # 10. Violet     (+80%) : Bulle spéculative
         ]
 
-        st.subheader("🗺️ Carte Thermique de Valorisation (Tech)")
-        st.caption("Taille = Market Cap | Couleur = Premium/Discount vs Moyenne 5 ans")
+        st.subheader("🗺️ Carte Thermique de Valorisation (10 Niveaux)")
+        st.caption("Échelle : Bleu (Pas cher) ➔ Vert ➔ Jaune ➔ Rouge (Très cher)")
 
         fig = px.treemap(
             df,
@@ -166,11 +173,10 @@ if st.button('🚀 Lancer le Market Screen', type="primary"):
             values='Market Cap',
             color='Premium/Discount',
             
-            # Configuration Couleurs demandée
+            # Application de l'échelle à 10 couleurs
             color_continuous_scale=custom_scale,
-            range_color=[-80, 80],  # Borne l'échelle entre -80% et +80%
+            range_color=[-80, 80],
             
-            # Données au survol
             hover_data={
                 'Premium/Discount': ':.1f%',
                 'Forward P/E': ':.1f',
