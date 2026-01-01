@@ -7,141 +7,120 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Ultimate Market Screener", layout="wide")
+st.set_page_config(page_title="Global Screener V6.1", layout="wide")
 
-st.title("🌍 Ultimate Global Screener")
+st.title("🌍 Ultimate Global Screener (Corrigé)")
 st.markdown("""
 **Scan de Valorisation Mondiale (P/E vs Moyenne Hist. 5 ans)**
-* 🇺🇸 **US** (S&P 500, Nasdaq)
-* 🇪🇺 **Europe** (CAC 40, DAX, FTSE 100, SMI)
-* 🇨🇦 **Canada** (TSX 60)
-* 🇯🇵 **Japon** (Nikkei 225)
+* Correctifs appliqués : Scraping robuste (Canada/Japon/Suisse) & Conversion Pence/Livre (UK).
 """)
 
-# --- 2. RÉCUPÉRATION ET FILTRAGE DYNAMIQUE ---
+# --- 2. FONCTION DE RÉCUPÉRATION ROBUSTE ---
+
+def get_tickers_from_wikipedia(url, index_suffix=""):
+    """
+    Fonction intelligente qui cherche la colonne des tickers quel que soit son nom.
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        r = requests.get(url, headers=headers)
+        # On lit toutes les tables de la page
+        tables = pd.read_html(StringIO(r.text))
+        
+        found_tickers = []
+        
+        # Mots-clés possibles pour la colonne ticker
+        possible_cols = ['Symbol', 'Ticker', 'Code', 'Security Symbol', 'Stock symbol']
+        
+        for df in tables:
+            # On cherche si une des colonnes correspond
+            col_match = next((c for c in df.columns if c in possible_cols), None)
+            
+            if col_match:
+                raw_list = df[col_match].tolist()
+                # Nettoyage et ajout du suffixe
+                for t in raw_list:
+                    t = str(t).strip()
+                    # Gestion spécifique S&P/TSX (parfois 'RY.TO', parfois 'RY')
+                    if index_suffix == ".TO" and ".TO" in t:
+                        found_tickers.append(t)
+                    else:
+                        # On évite le double suffixe
+                        if index_suffix and not t.endswith(index_suffix):
+                            t = f"{t}{index_suffix}"
+                        elif index_suffix:
+                             t = t # Le suffixe est déjà là
+                        found_tickers.append(t)
+                
+                # Si on a trouvé une liste décente (>5 éléments), on arrête de chercher
+                if len(found_tickers) > 5:
+                    return found_tickers
+
+        return found_tickers
+    except Exception as e:
+        st.error(f"Erreur scraping Wikipedia ({url}): {e}")
+        return []
 
 @st.cache_data(ttl=3600*24)
 def get_top_tickers(index_name, limit):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     status = st.empty()
     status.text(f"⏳ Récupération de la liste {index_name}...")
     
     tickers = []
     
-    try:
-        # --- AMÉRIQUE DU NORD ---
-        if index_name == "S&P 500 (USA)":
-            url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-            r = requests.get(url, headers=headers)
-            table = pd.read_html(StringIO(r.text))[0]
-            tickers = [t.replace('.', '-') for t in table['Symbol'].tolist()]
-
-        elif index_name == "Nasdaq 100 (USA)":
-            url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-            r = requests.get(url, headers=headers)
-            tables = pd.read_html(StringIO(r.text))
-            for t in tables:
-                if 'Ticker' in t.columns:
-                    tickers = t['Ticker'].tolist()
-                    break
-
-        elif index_name == "TSX 60 (Canada)":
-            url = "https://en.wikipedia.org/wiki/S%26P/TSX_60"
-            r = requests.get(url, headers=headers)
-            table = pd.read_html(StringIO(r.text))[0]
-            # Wiki donne souvent 'RY', Yahoo veut 'RY.TO'
-            raw_tickers = table['Symbol'].tolist()
-            tickers = [f"{t}.TO" if not str(t).endswith('.TO') else t for t in raw_tickers]
-
-        # --- EUROPE ---
-        elif index_name == "CAC 40 (France)":
-            url = "https://en.wikipedia.org/wiki/CAC_40"
-            r = requests.get(url, headers=headers)
-            tables = pd.read_html(StringIO(r.text))
-            for t in tables:
-                if 'Ticker' in t.columns:
-                    raw = t['Ticker'].tolist()
-                    tickers = [f"{x}.PA" if not str(x).endswith('.PA') else x for x in raw]
-                    break
+    # --- DÉFINITION DES URLS ET SUFFIXES ---
+    if index_name == "S&P 500 (USA)":
+        # Cas particulier S&P : table[0] et replace '.' par '-'
+        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", "")
+        tickers = [t.replace('.', '-') for t in tickers]
         
-        elif index_name == "DAX 40 (Allemagne)":
-            url = "https://en.wikipedia.org/wiki/DAX"
-            r = requests.get(url, headers=headers)
-            tables = pd.read_html(StringIO(r.text))
-            for t in tables:
-                if 'Ticker' in t.columns:
-                    raw = t['Ticker'].tolist()
-                    tickers = [f"{x}.DE" if not str(x).endswith('.DE') else x for x in raw]
-                    break
-                    
-        elif index_name == "FTSE 100 (Royaume-Uni)":
-            url = "https://en.wikipedia.org/wiki/FTSE_100_Index"
-            r = requests.get(url, headers=headers)
-            table = pd.read_html(StringIO(r.text))[4] # Souvent la table 4 ou chercher 'Ticker'
-            # Fallback recherche table
-            if 'Ticker' not in table.columns:
-                 tables = pd.read_html(StringIO(r.text))
-                 for t in tables:
-                     if 'Ticker' in t.columns:
-                         table = t
-                         break
-            raw = table['Ticker'].tolist()
-            # Yahoo suffixe .L pour Londres
-            tickers = [f"{x}.L" if not str(x).endswith('.L') else x for x in raw]
-
-        elif index_name == "SMI 20 (Suisse)":
-            url = "https://en.wikipedia.org/wiki/Swiss_Market_Index"
-            r = requests.get(url, headers=headers)
-            tables = pd.read_html(StringIO(r.text))
-            for t in tables:
-                if 'Ticker' in t.columns:
-                    raw = t['Ticker'].tolist()
-                    # Yahoo suffixe .SW pour Swiss Exchange
-                    tickers = [f"{x}.SW" for x in raw] 
-                    break
-
-        # --- ASIE ---
-        elif index_name == "Nikkei 225 (Japon)":
-            url = "https://en.wikipedia.org/wiki/Nikkei_225"
-            r = requests.get(url, headers=headers)
-            tables = pd.read_html(StringIO(r.text))
-            # Table souvent complexe, on cherche celle avec "Symbol" ou "Code"
-            raw = []
-            for t in tables:
-                if 'Symbol' in t.columns:
-                    raw = t['Symbol'].tolist()
-                    break
-            # Yahoo veut '7203.T' pour Tokyo
-            tickers = [f"{x}.T" for x in raw]
-
-        # --- TRI & BATCHING ---
-        if not tickers: return []
-        status.text(f"⚡ Tri des {limit} plus grosses entreprises ({index_name})...")
+    elif index_name == "Nasdaq 100 (USA)":
+        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Nasdaq-100", "")
         
-        market_caps = {}
-        safe_limit = min(limit, len(tickers))
-        batch_size = 50
+    elif index_name == "TSX 60 (Canada)":
+        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/S%26P/TSX_60", ".TO")
         
-        for i in range(0, len(tickers), batch_size):
-            batch = tickers[i:i+batch_size]
-            for t in batch:
-                try:
-                    info = yf.Ticker(t).fast_info
-                    mcap = info['market_cap']
-                    if mcap:
-                        market_caps[t] = mcap
-                except:
-                    continue
+    elif index_name == "CAC 40 (France)":
+        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/CAC_40", ".PA")
         
-        sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:safe_limit]
-        status.empty()
-        return sorted_tickers
+    elif index_name == "DAX 40 (Allemagne)":
+        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/DAX", ".DE")
+        
+    elif index_name == "FTSE 100 (Royaume-Uni)":
+        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/FTSE_100_Index", ".L")
+        
+    elif index_name == "SMI 20 (Suisse)":
+        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Swiss_Market_Index", ".SW")
+        
+    elif index_name == "Nikkei 225 (Japon)":
+        tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/Nikkei_225", ".T")
 
-    except Exception as e:
-        st.error(f"Erreur : {e}")
+    if not tickers:
         return []
 
-# --- 3. ANALYSE PROFONDE ---
+    status.text(f"⚡ Tri des {limit} plus grosses entreprises ({index_name})...")
+    
+    # Tri par Market Cap (Batching)
+    market_caps = {}
+    safe_limit = min(limit, len(tickers))
+    batch_size = 50
+    
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i+batch_size]
+        for t in batch:
+            try:
+                info = yf.Ticker(t).fast_info
+                mcap = info['market_cap']
+                if mcap:
+                    market_caps[t] = mcap
+            except:
+                continue
+    
+    sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:safe_limit]
+    status.empty()
+    return sorted_tickers
+
+# --- 3. ANALYSE PROFONDE (AVEC CORRECTION DEVISE UK) ---
 
 @st.cache_data(ttl=3600*12)
 def get_historical_valuation(ticker):
@@ -149,6 +128,10 @@ def get_historical_valuation(ticker):
         stock = yf.Ticker(ticker)
         info = stock.info
         
+        # Récupération Devise
+        currency = info.get('currency', 'USD')
+        
+        # Données de base
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         if fwd_pe is None: return None
 
@@ -170,7 +153,17 @@ def get_historical_valuation(ticker):
             year = date.year
             mask = history.index.year == year
             if not mask.any(): continue
+            
             avg_price = history.loc[mask, 'Close'].mean()
+            
+            # --- CORRECTION CRITIQUE POUR LONDRES (GBp vs GBP) ---
+            # Si la devise est en Pence (GBp), le prix est ex: 1000.
+            # Mais l'EPS est en Livres (GBP), ex: 1.0.
+            # Sans correction : P/E = 1000 / 1 = 1000 (Faux)
+            # Avec correction : P/E = (1000 / 100) / 1 = 10 (Juste)
+            if currency == 'GBp':
+                avg_price = avg_price / 100.0
+            
             if avg_price and eps > 0:
                 pe_ratios.append(avg_price / eps)
         
@@ -221,7 +214,6 @@ with c1:
     idx = st.selectbox("1. Choisir l'Indice", indices)
 
 with c2:
-    # Réglage auto du slider selon la taille de l'indice
     if "SMI" in idx: max_v = 20
     elif "CAC" in idx or "DAX" in idx: max_v = 40
     elif "TSX" in idx: max_v = 60
@@ -243,7 +235,7 @@ if btn:
         df = run_analysis(top)
         
         if not df.empty:
-            # NETTOYAGE VISUEL (On retire tous les suffixes possibles)
+            # NETTOYAGE VISUEL
             for suffix in ['.PA', '.DE', '.L', '.TO', '.SW', '.T']:
                 df['Ticker'] = df['Ticker'].astype(str).str.replace(suffix, '', regex=False)
             
@@ -266,10 +258,9 @@ if btn:
             
             # TABLEAU
             st.subheader("Données Détaillées")
-            # Gestion Devise
             cur = "$"
             if "France" in idx or "Allemagne" in idx: cur = "€"
-            elif "Royaume" in idx: cur = "£"
+            elif "Royaume" in idx: cur = "£" # Note: On affiche £ car on a converti les prix en livres
             elif "Suisse" in idx: cur = "CHF "
             elif "Japon" in idx: cur = "¥"
             elif "Canada" in idx: cur = "C$ "
@@ -288,4 +279,4 @@ if btn:
                 use_container_width=True
             )
         else: st.warning("Pas de données complètes trouvées.")
-    else: st.error("Erreur de liste.")
+    else: st.error("Impossible de récupérer la liste des tickers (Structure Wikipedia non reconnue).")
