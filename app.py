@@ -7,14 +7,14 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V17", layout="wide")
+st.set_page_config(page_title="Global Screener V17.1", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V17 - Qualité & Sécurité)")
+st.title("🌍 Ultimate Global Screener (V17.1 - Correctif)")
 st.markdown("""
 **Analyse 360° : Valorisation + Croissance + Santé Financière**
 * **Onglet 1** : Historique (Value).
 * **Onglet 2** : Croissance (Growth).
-* **Tableau** : Ajout des indicateurs de Risque (Dette, Marge, PEG).
+* **Tableau** : Indicateurs de Risque (Dette, Marge, PEG).
 """)
 
 # --- 2. FONCTIONS DE SCRAPING ---
@@ -104,7 +104,7 @@ def get_top_tickers(index_name, limit):
     status.empty()
     return sorted_tickers
 
-# --- 3. ANALYSE PROFONDE (AVEC INDICATEURS DE SANTÉ) ---
+# --- 3. ANALYSE PROFONDE ---
 
 @st.cache_data(ttl=3600*12)
 def get_historical_valuation(ticker):
@@ -114,11 +114,11 @@ def get_historical_valuation(ticker):
         currency = info.get('currency', 'USD')
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         
-        # --- NOUVEAUX INDICATEURS ---
-        growth = info.get('earningsGrowth', None) # Croissance estimée
-        peg = info.get('pegRatio', None)          # Ratio Prix/Croissance
-        debt_eq = info.get('debtToEquity', None)  # Dette sur Capitaux (ex: 150 pour 150%)
-        margins = info.get('profitMargins', None) # Marge Nette (ex: 0.20 pour 20%)
+        # --- INDICATEURS ---
+        growth = info.get('earningsGrowth', None)
+        peg = info.get('pegRatio', None)
+        debt_eq = info.get('debtToEquity', None)
+        margins = info.get('profitMargins', None)
         
         if fwd_pe is None: return None
 
@@ -147,7 +147,6 @@ def get_historical_valuation(ticker):
         
         valuation_diff = (fwd_pe - avg_hist_pe) / avg_hist_pe
         
-        # Formatage des données pour le tableau
         growth_percent = growth * 100 if growth is not None else None
         margins_percent = margins * 100 if margins is not None else None
 
@@ -229,7 +228,6 @@ if 'data' in st.session_state:
     
     scale = ["#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"]
     
-    # --- TAB 1 : TREEMAP ---
     with tab1:
         st.subheader(f"Carte Thermique : {current_idx}")
         fig_tree = px.treemap(
@@ -241,7 +239,6 @@ if 'data' in st.session_state:
         fig_tree.update_layout(height=700, margin=dict(t=20, l=10, r=10, b=10))
         st.plotly_chart(fig_tree, use_container_width=True)
 
-    # --- TAB 2 : GARP ---
     with tab2:
         col_sel1, col_sel2 = st.columns([1, 3])
         all_sectors = sorted(df['Sector'].unique().tolist())
@@ -269,7 +266,6 @@ if 'data' in st.session_state:
         else:
             st.warning("Pas assez de données de croissance.")
 
-    # TABLEAU COMPLET AVEC RISQUES
     st.divider()
     st.subheader("Données Détaillées & Indicateurs de Risque")
     st.caption("• **PEG** < 1 : Très bon marché / > 2 : Cher | • **Debt/Eq** > 200 : Endetté | • **Margins** < 5% : Faible rentabilité")
@@ -281,38 +277,42 @@ if 'data' in st.session_state:
     elif "Canada" in current_idx: cur = "C$ "
     elif "Inde" in current_idx: cur = "₹ "
 
+    # Fonction couleurs
     def color_premium(v):
+        if pd.isna(v): return ''
         if v < -20: return 'color: blue; font-weight: bold'
         if v < 0: return 'color: green'
         if v > 40: return 'color: red; font-weight: bold'
         if v > 0: return 'color: orange'
         return 'color: black'
     
-    # Coloriage simple pour le PEG
     def color_peg(v):
         if pd.isna(v): return ''
         if v < 1: return 'color: green; font-weight: bold'
         if v > 2.5: return 'color: red'
         return ''
 
-    # Coloriage pour la Dette
     def color_debt(v):
         if pd.isna(v): return ''
-        if v > 200: return 'color: red; font-weight: bold' # Très endetté
-        if v < 50: return 'color: green' # Peu endetté
+        if v > 200: return 'color: red; font-weight: bold'
+        if v < 50: return 'color: green'
         return ''
 
+    # --- LE CORRECTIF EST ICI ---
+    # On remplace les chaînes de format fixes par des fonctions sécurisées (lambda)
+    # Si x est un nombre valide (pd.notnull), on formate. Sinon, on met "-"
+    
     st.dataframe(
         df.sort_values("Premium/Discount").style
         .format({
-            "Market Cap": cur + "{:,.0f}", 
-            "Forward P/E": "{:.1f}", 
-            "Avg Hist P/E": "{:.1f}", 
-            "Growth %": "{:+.1f}%",
-            "PEG": "{:.2f}",
-            "Debt/Eq": "{:.0f}%",
-            "Margins %": "{:.1f}%",
-            "Premium/Discount": "{:+.1f}%"
+            "Market Cap": lambda x: (cur + "{:,.0f}").format(x) if pd.notnull(x) else "-", 
+            "Forward P/E": lambda x: "{:.1f}".format(x) if pd.notnull(x) else "-", 
+            "Avg Hist P/E": lambda x: "{:.1f}".format(x) if pd.notnull(x) else "-", 
+            "Growth %": lambda x: "{:+.1f}%".format(x) if pd.notnull(x) else "-",
+            "PEG": lambda x: "{:.2f}".format(x) if pd.notnull(x) else "-",
+            "Debt/Eq": lambda x: "{:.0f}%".format(x) if pd.notnull(x) else "-",
+            "Margins %": lambda x: "{:.1f}%".format(x) if pd.notnull(x) else "-",
+            "Premium/Discount": lambda x: "{:+.1f}%".format(x) if pd.notnull(x) else "-"
         })
         .map(color_premium, subset=['Premium/Discount'])
         .map(color_peg, subset=['PEG'])
