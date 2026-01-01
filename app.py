@@ -7,11 +7,11 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="S&P 500 Value Screener", layout="wide")
+st.set_page_config(page_title="US Market Screener", layout="wide")
 
-st.title("🏆 S&P 500 : Analyse de Valeur Historique (Sur-Mesure)")
+st.title("🇺🇸 US Market Screener : Analyse de Valeur Historique")
 st.markdown("""
-Ce scanner isole les **plus grosses entreprises américaines** (selon votre choix) et compare leur prix actuel à leur **moyenne historique sur 5 ans**.
+Comparez la valorisation actuelle des géants américains à leur **moyenne historique sur 5 ans**.
 * **Bleu/Vert** = Sous-évalué (Opportunité ?)
 * **Gris/Jaune** = Prix normal
 * **Rouge/Violet** = Surévalué (Risque ?)
@@ -20,30 +20,46 @@ Ce scanner isole les **plus grosses entreprises américaines** (selon votre choi
 # --- 2. RÉCUPÉRATION ET FILTRAGE DYNAMIQUE ---
 
 @st.cache_data(ttl=3600*24)
-def get_top_sp500_tickers(limit):
+def get_top_tickers(index_name, limit):
     """
-    1. Récupère les 500 tickers du S&P.
-    2. Trie par Market Cap.
-    3. Garde uniquement les 'limit' premiers (ex: Top 50, Top 200...).
+    Récupère les tickers de l'indice choisi, les trie par Market Cap, 
+    et ne garde que le Top 'limit'.
     """
     headers = {"User-Agent": "Mozilla/5.0"}
     status = st.empty()
-    status.text("⏳ Récupération de la liste S&P 500...")
+    status.text(f"⏳ Récupération de la liste {index_name}...")
+    
+    tickers = []
     
     try:
-        # 1. Liste complète via Wikipedia
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        r = requests.get(url, headers=headers)
-        table = pd.read_html(StringIO(r.text))[0]
-        tickers = table['Symbol'].tolist()
-        tickers = [t.replace('.', '-') for t in tickers] # Correction BRK.B
-        
-        # 2. Tri par Market Cap (Utilisation de fast_info pour la vitesse)
-        status.text(f"⚡ Tri des {limit} plus grosses capitalisations parmi {len(tickers)} actions...")
+        # A. Choix de la source selon l'indice
+        if index_name == "S&P 500":
+            url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+            r = requests.get(url, headers=headers)
+            table = pd.read_html(StringIO(r.text))[0]
+            tickers = table['Symbol'].tolist()
+            # Correction spécifique S&P (BRK.B -> BRK-B)
+            tickers = [t.replace('.', '-') for t in tickers]
+            
+        elif index_name == "Nasdaq 100":
+            url = "https://en.wikipedia.org/wiki/Nasdaq-100"
+            r = requests.get(url, headers=headers)
+            # Sur la page Nasdaq, c'est souvent la table des composants
+            tables = pd.read_html(StringIO(r.text))
+            for t in tables:
+                if 'Ticker' in t.columns:
+                    tickers = t['Ticker'].tolist()
+                    break
+                if 'Symbol' in t.columns:
+                    tickers = t['Symbol'].tolist()
+                    break
+
+        # B. Tri par Market Cap (via fast_info)
+        status.text(f"⚡ Tri des {limit} plus grosses entreprises du {index_name}...")
         
         market_caps = {}
         
-        # On procède par petits paquets pour ne pas bloquer
+        # Batching pour éviter le spam
         batch_size = 50
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i+batch_size]
@@ -56,15 +72,15 @@ def get_top_sp500_tickers(limit):
                 except:
                     continue
         
-        # Tri décroissant et coupe selon la limite choisie par l'utilisateur
+        # Tri décroissant et coupe
         sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:limit]
         
         status.empty()
         return sorted_tickers
 
     except Exception as e:
-        st.error(f"Erreur récupération S&P : {e}")
-        return ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"] # Fallback
+        st.error(f"Erreur récupération {index_name} : {e}")
+        return ["AAPL", "MSFT", "NVDA"] # Fallback
 
 # --- 3. ANALYSE PROFONDE (HISTORIQUE P/E) ---
 
@@ -75,28 +91,25 @@ def get_historical_valuation(ticker):
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # Filtres de base
+        # Filtres
         sector = info.get('sector', 'Unknown')
         fwd_pe = info.get('forwardPE', None)
         
         if fwd_pe is None: return None
 
-        # Récupération des données comptables pour l'historique
+        # Historique Financier
         financials = stock.financials
         if financials.empty: return None
             
-        # Recherche EPS
         eps_data = financials.T 
         eps_cols = [c for c in eps_data.columns if 'EPS' in str(c) or 'Earnings' in str(c)]
         if not eps_cols: return None
         
         eps_series = eps_data[eps_cols[0]].sort_index()
         
-        # Historique Prix
         start_date = eps_series.index.min().strftime('%Y-%m-%d')
         history = stock.history(start=start_date)
         
-        # Calcul P/E Historique
         pe_ratios = []
         for date, eps in eps_series.items():
             year = date.year
@@ -110,7 +123,6 @@ def get_historical_valuation(ticker):
             
         avg_historical_pe = sum(pe_ratios) / len(pe_ratios)
 
-        # Calcul Premium/Discount
         valuation_diff = (fwd_pe - avg_historical_pe) / avg_historical_pe
         
         return {
@@ -147,49 +159,55 @@ def run_analysis(tickers_list):
 
 # --- 4. INTERFACE ---
 
-# Zone de paramétrage
-col_config1, col_config2 = st.columns([1, 2])
+col1, col2, col3 = st.columns([1, 1, 1])
 
-with col_config1:
-    # LE SLIDER MAGIQUE EST ICI
-    nb_stocks = st.slider("Nombre d'actions à analyser (Top Market Cap)", min_value=10, max_value=500, value=150, step=10)
-    st.caption(f"Le scan analysera les {nb_stocks} plus grosses entreprises du S&P 500.")
+with col1:
+    # CHOIX DE L'INDICE
+    selected_index = st.selectbox("1. Choisir l'Indice", ["S&P 500", "Nasdaq 100"])
 
-with col_config2:
-    st.write(" ") # Espace pour aligner
+with col2:
+    # SLIDER ADAPTATIF
+    # On définit le max selon l'indice choisi
+    max_slider = 100 if selected_index == "Nasdaq 100" else 500
+    # On définit une valeur par défaut cohérente (ex: 50)
+    nb_stocks = st.slider(f"2. Nombre d'actions (Max {max_slider})", 
+                          min_value=10, max_value=max_slider, value=50, step=10)
+
+with col3:
+    st.write(" ") # Espace blanc pour aligner verticalement le bouton
     st.write(" ")
-    start_button = st.button(f'🚀 Lancer l\'analyse sur le TOP {nb_stocks}', type="primary")
+    start_btn = st.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True)
 
-if start_button:
+if start_btn:
     
-    # 1. On récupère le nombre exact demandé
-    top_tickers = get_top_sp500_tickers(limit=nb_stocks)
-    st.success(f"Cible verrouillée : Les {len(top_tickers)} plus grosses capitalisations.")
+    # 1. Récupération liste
+    top_tickers = get_top_tickers(selected_index, nb_stocks)
+    st.success(f"Cible : Top {len(top_tickers)} du {selected_index}.")
     
-    # 2. On lance l'analyse
+    # 2. Analyse
     df = run_analysis(top_tickers)
     
     if not df.empty:
         st.divider()
         
-        col1, col2 = st.columns(2)
-        col1.metric("Actions Analysées", len(df))
+        # Stats Rapides
+        c1, c2 = st.columns(2)
+        c1.metric("Actions Analysées", len(df))
         med = df['Premium/Discount'].median()
-        col2.metric("Niveau Médian du Marché", f"{med:+.1f}%", 
-                    delta="Sous-évalué" if med < 0 else "Surévalué", delta_color="inverse")
+        c2.metric("Valorisation Médiane", f"{med:+.1f}%", 
+                  delta="Bon marché" if med < 0 else "Cher", delta_color="inverse")
 
-        # --- TREEMAP CONFIGURATION ---
-        
+        # --- TREEMAP ---
         custom_scale = [
             "#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", 
             "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"
         ]
 
-        st.subheader(f"🗺️ Carte Thermique : Top {nb_stocks} S&P 500")
+        st.subheader(f"🗺️ Carte Thermique : {selected_index} (Top {nb_stocks})")
         
         fig = px.treemap(
             df,
-            path=[px.Constant(f"S&P 500 (Top {nb_stocks})"), 'Sector', 'Ticker'],
+            path=[px.Constant(selected_index), 'Sector', 'Ticker'],
             values='Market Cap',
             color='Premium/Discount',
             color_continuous_scale=custom_scale,
@@ -209,7 +227,7 @@ if start_button:
             hovertemplate="<b>%{label}</b><br>Diff Moyenne: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>"
         )
         
-        fig.update_layout(height=800, margin=dict(t=30, l=10, r=10, b=10))
+        fig.update_layout(height=750, margin=dict(t=30, l=10, r=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
         
         # Tableau
@@ -233,6 +251,5 @@ if start_button:
             .map(color_val, subset=['Premium/Discount']),
             use_container_width=True
         )
-
     else:
-        st.error("Aucune donnée disponible.")
+        st.error("Aucune donnée trouvée.")
