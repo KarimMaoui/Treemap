@@ -4,93 +4,93 @@ import pandas as pd
 import plotly.express as px
 import time
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="Tech Value Screener", layout="wide")
+# --- 1. CONFIGURATION DE LA PAGE ---
+st.set_page_config(page_title="Nasdaq Tech Value Screener", layout="wide")
+
 st.title("🧩 Nasdaq Tech Screener : Valorisation Relative")
 st.markdown("""
-Ce scanner compare la valorisation actuelle (**Forward P/E**) à la **moyenne historique** de l'action.
-* **Vert** : L'action est moins chère que sa moyenne historique (Décote).
-* **Rouge** : L'action est plus chère que sa moyenne historique (Prime).
+**Analyse de la "Cherté" des actions Tech par rapport à leur propre histoire.**
+* L'outil compare le **Forward P/E** (Attentes futures) au **P/E Moyen Historique** (5 dernières années).
+* **Couleurs** :
+    * 🟢 **Vert** : L'action est moins chère que d'habitude (Décote).
+    * ⚪ **Gris** : L'action est à son prix historique normal.
+    * 🔴 **Rouge** : L'action est plus chère que d'habitude (Prime).
 """)
 
-# Liste ciblée Tech / Growth (Nasdaq 100 Tech subset)
-# Pour une vraie prod, on pourrait scraper la liste complète des tickers tech.
+# --- 2. LISTE DES TICKERS (Nasdaq Tech / Growth Selection) ---
+# Une sélection représentative de ~40 valeurs Tech majeures
 tickers_list = [
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "ADBE", 
     "CRM", "AMD", "INTC", "CSCO", "NFLX", "QCOM", "TXN", "AMAT", "ADP", 
     "ADI", "MU", "LRCX", "INTU", "KLAC", "SNPS", "CDNS", "PANW", "NXPI", 
-    "FTNT", "MRVL", "MCHP", "ON", "CRWD", "WDAY", "ZS", "DDOG", "TEAM"
+    "FTNT", "MRVL", "MCHP", "ON", "CRWD", "WDAY", "ZS", "DDOG", "TEAM", 
+    "PLTR", "UBER", "ABNB", "TTD", "NET"
 ]
 
-@st.cache_data(ttl=3600*24) # Cache les données pour 24h pour éviter de spammer Yahoo
+# --- 3. FONCTIONS DE RÉCUPÉRATION ET CALCUL ---
+
+@st.cache_data(ttl=3600*12) # Cache de 12h pour ne pas recharger à chaque clic
 def get_historical_valuation(ticker):
     """
-    Tente de reconstruire un P/E historique et récupère le Forward P/E actuel.
+    Récupère le Forward P/E et tente de reconstruire le P/E historique moyen sur ~5 ans.
+    Renvoie None si données insuffisantes ou secteur non pertinent.
     """
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         
-        # 1. Filtre Secteur : On ne garde que la Tech
-        # (Parfois Yahoo classe Amazon en "Cyclical", on est souple sur la condition)
-        sector = info.get('sector', '')
-        if 'Technology' not in sector and 'Communication' not in sector and 'Consumer' not in sector:
+        # A. Filtre : On garde principalement la Tech et comms
+        # (Certains comme Amazon sont "Consumer Cyclical", on accepte pour la pertinence)
+        relevant_sectors = ['Technology', 'Communication Services', 'Consumer Cyclical']
+        sector = info.get('sector', 'Unknown')
+        
+        if sector not in relevant_sectors:
             return None
 
-        # 2. Récupérer le Forward P/E actuel
+        # B. Récupération Forward P/E
         fwd_pe = info.get('forwardPE', None)
         if fwd_pe is None:
-            return None
+            return None # Pas de prévision de bénéfice, on ignore
 
-        # 3. Calculer le P/E Historique (Approximation)
-        # Yahoo gratuit donne environ 4 ans de financials via .financials
+        # C. Calcul du P/E Historique (Estimation via Financials & History)
         financials = stock.financials
         if financials.empty: 
             return None
             
-        # On cherche le 'Basic EPS' ou 'Diluted EPS'
-        try:
-            # Transpose pour avoir les dates en index
-            eps_data = financials.T 
-            # On cherche une colonne qui ressemble à EPS
-            eps_col = [c for c in eps_data.columns if 'EPS' in str(c) or 'Earnings Per Share' in str(c)]
-            if not eps_col:
-                return None
-            
-            # On prend la série d'EPS annuel
-            eps_series = eps_data[eps_col[0]].sort_index()
-            
-            # On récupère l'historique de prix sur la même période (5 ans max en général pour financials)
-            start_date = eps_series.index.min().strftime('%Y-%m-%d')
-            history = stock.history(start=start_date)
-            
-            # On resample les prix en annuel (moyenne de l'année) pour simplifier le calcul
-            yearly_prices = history['Close'].resample('YE').mean()
-            
-            # On aligne les index (approximatif par année) pour diviser Prix / EPS
-            # Ceci est une estimation macro pour obtenir une "baseline" de valorisation
-            pe_ratios = []
-            for date, eps in eps_series.items():
-                # On trouve le prix moyen de l'année correspondante
-                year = date.year
-                try:
-                    avg_price_that_year = history[history.index.year == year]['Close'].mean()
-                    if avg_price_that_year and eps > 0:
-                        pe_ratios.append(avg_price_that_year / eps)
-                except:
-                    pass
-            
-            if not pe_ratios:
-                return None
-                
-            avg_historical_pe = sum(pe_ratios) / len(pe_ratios)
-            
-        except Exception as e:
-            # Fallback si calcul complexe échoue: on retourne None
+        # Trouver la ligne EPS (Basic ou Diluted)
+        eps_data = financials.T 
+        eps_cols = [c for c in eps_data.columns if 'EPS' in str(c) or 'Earnings' in str(c)]
+        
+        if not eps_cols:
             return None
+            
+        # Série EPS annuel
+        eps_series = eps_data[eps_cols[0]].sort_index()
+        
+        # Historique de prix (5 ans)
+        start_date = eps_series.index.min().strftime('%Y-%m-%d')
+        history = stock.history(start=start_date)
+        
+        # Calcul des P/E annuels passés
+        pe_ratios = []
+        for date, eps in eps_series.items():
+            year = date.year
+            # Prix moyen de l'année concernée
+            mask = history.index.year == year
+            if not mask.any(): continue
+            
+            avg_price = history.loc[mask, 'Close'].mean()
+            
+            if avg_price and eps > 0: # On ignore les années de pertes pour la moyenne P/E
+                pe_ratios.append(avg_price / eps)
+        
+        if not pe_ratios:
+            return None
+            
+        avg_historical_pe = sum(pe_ratios) / len(pe_ratios)
 
-        # Calcul de la "Premium / Discount" en %
-        # Si (15 - 20) / 20 = -0.25 (-25% -> Vert)
+        # D. Calcul de la Prime/Décote en %
+        # Exemple: Fwd=20, Hist=25 -> (20-25)/25 = -0.20 (-20%)
         valuation_diff = (fwd_pe - avg_historical_pe) / avg_historical_pe
         
         return {
@@ -100,7 +100,7 @@ def get_historical_valuation(ticker):
             "Market Cap": info.get('marketCap', 0),
             "Forward P/E": fwd_pe,
             "Avg Hist P/E": avg_historical_pe,
-            "Premium/Discount": valuation_diff * 100  # En pourcentage
+            "Premium/Discount": valuation_diff * 100  # Conversion en pourcentage
         }
 
     except Exception as e:
@@ -108,70 +108,118 @@ def get_historical_valuation(ticker):
 
 def run_scanner():
     data = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    # Barre de progression visuelle
+    progress_text = "Analyse fondamentale en cours (Yahoo Finance API)..."
+    my_bar = st.progress(0, text=progress_text)
     
     total = len(tickers_list)
     
     for i, ticker in enumerate(tickers_list):
-        status_text.text(f"Analyse des fondamentaux de {ticker}...")
-        result = get_historical_valuation(ticker)
-        if result:
-            data.append(result)
+        res = get_historical_valuation(ticker)
+        if res:
+            data.append(res)
         
-        # Petite pause pour être gentil avec l'API Yahoo
-        time.sleep(0.1) 
-        progress_bar.progress((i + 1) / total)
+        # Mise à jour progression
+        time.sleep(0.05) # Petite pause technique
+        my_bar.progress((i + 1) / total, text=f"Analyse de {ticker}...")
     
-    progress_bar.empty()
-    status_text.empty()
+    my_bar.empty()
     return pd.DataFrame(data)
 
-if st.button('Lancer l\'analyse Tech', type="primary"):
+# --- 4. INTERFACE UTILISATEUR & VISUALISATION ---
+
+if st.button('🚀 Lancer le Market Screen', type="primary"):
     df = run_scanner()
     
     if not df.empty:
-        col1, col2 = st.columns(2)
-        col1.metric("Tech Stocks Analysés", len(df))
-        avg_premium = df['Premium/Discount'].median()
-        col2.metric("Niveau médian du marché", f"{avg_premium:.1f}%", 
-                    delta="Surévalué" if avg_premium > 0 else "Sous-évalué",
-                    delta_color="inverse")
+        # --- Metrics ---
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Actions Analysées", len(df))
+        
+        median_val = df['Premium/Discount'].median()
+        col2.metric("Valorisation Médiane", f"{median_val:+.1f}%", 
+                    delta="Cher" if median_val > 0 else "Pas cher", delta_color="inverse")
+        
+        cheapest = df.loc[df['Premium/Discount'].idxmin()]
+        col3.metric("La plus grosse décote", cheapest['Ticker'], f"{cheapest['Premium/Discount']:.1f}%")
 
-        st.write("---")
+        st.divider()
+
+        # --- TREEMAP CONFIGURATION ---
         
-        # --- LOGIQUE COULEUR HEATMAP ---
-        # On veut: Vert si Discount (négatif), Rouge si Premium (positif)
-        # Plotly 'RdYlGn_r' fait : Vert (bas) -> Jaune -> Rouge (haut)
-        # C'est exactement ce qu'il nous faut car nos valeurs "Discount" sont basses (négatives).
-        
-        # On borne les couleurs entre -50% et +50% pour éviter qu'une anomalie écrase tout
+        # Échelle de couleurs personnalisée (5 étapes)
+        # Vert Foncé -> Vert Clair -> Gris (Neutre) -> Orange -> Rouge Foncé
+        custom_scale = [
+            '#004d00',  # -80 (Très sous-évalué)
+            '#32CD32',  # -40 (Sous-évalué)
+            '#F0F0F0',  # 0   (Juste prix / Gris clair)
+            '#FF8C00',  # +40 (Surévalué)
+            '#8B0000'   # +80 (Très surévalué)
+        ]
+
+        st.subheader("🗺️ Carte Thermique de Valorisation (Tech)")
+        st.caption("Taille = Market Cap | Couleur = Premium/Discount vs Moyenne 5 ans")
+
         fig = px.treemap(
             df,
-            path=[px.Constant("Nasdaq Tech"), 'Ticker'],
+            path=[px.Constant("Nasdaq Tech"), 'Sector', 'Ticker'],
             values='Market Cap',
             color='Premium/Discount',
-            hover_data=['Name', 'Forward P/E', 'Avg Hist P/E', 'Premium/Discount'],
-            color_continuous_scale='RdYlGn_r', 
-            range_color=[-50, 50], 
-            title="Heatmap de Valorisation Relative (Vs Historique 5 ans)"
+            
+            # Configuration Couleurs demandée
+            color_continuous_scale=custom_scale,
+            range_color=[-80, 80],  # Borne l'échelle entre -80% et +80%
+            
+            # Données au survol
+            hover_data={
+                'Premium/Discount': ':.1f%',
+                'Forward P/E': ':.1f',
+                'Avg Hist P/E': ':.1f',
+                'Market Cap': False,
+                'Sector': False,
+                'Ticker': False
+            }
         )
         
-        # Customisation du tooltip pour qu'il soit lisible
-        fig.update_traces(hovertemplate='<b>%{label}</b><br>Market Cap: $%{value}<br>Premium/Discount: %{color:.2f}%<extra></extra>')
+        # Amélioration du template visuel
+        fig.update_traces(
+            textinfo="label+text",
+            hovertemplate=(
+                "<b>%{label}</b><br>"
+                "Premium/Discount: %{color:.1f}%<br>"
+                "Fwd P/E: %{customdata[1]} (Moy: %{customdata[2]})"
+            )
+        )
         
-        fig.update_layout(height=650)
+        fig.update_layout(
+            margin=dict(t=30, l=10, r=10, b=10),
+            height=650,
+        )
+        
         st.plotly_chart(fig, use_container_width=True)
         
-        st.subheader("Données brutes")
+        # --- TABLEAU DÉTAILLÉ ---
+        st.subheader("📋 Données Détaillées")
+        
+        # Fonction pour colorer le texte dans le tableau
+        def color_valuation_text(val):
+            if val < -10: color = 'green'
+            elif val > 10: color = 'red'
+            else: color = 'gray'
+            return f'color: {color}; font-weight: bold'
+
         st.dataframe(
-            df.sort_values("Premium/Discount").style.format({
+            df.sort_values("Premium/Discount").style
+            .format({
                 "Market Cap": "${:,.0f}",
                 "Forward P/E": "{:.1f}",
                 "Avg Hist P/E": "{:.1f}",
                 "Premium/Discount": "{:+.1f}%"
-            }),
-            use_container_width=True
+            })
+            .map(color_valuation_text, subset=['Premium/Discount']),
+            use_container_width=True,
+            height=400
         )
+        
     else:
-        st.error("Aucune donnée trouvée ou erreur API.")
+        st.error("Erreur : Impossible de récupérer les données. Vérifiez votre connexion.")
