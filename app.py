@@ -7,24 +7,24 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="S&P 150 Deep Value", layout="wide")
+st.set_page_config(page_title="S&P 500 Value Screener", layout="wide")
 
-st.title("🏆 S&P 500 Top 150 : Analyse de Valeur Historique")
+st.title("🏆 S&P 500 : Analyse de Valeur Historique (Sur-Mesure)")
 st.markdown("""
-Ce scanner isole les **150 plus grosses entreprises américaines** et compare leur prix actuel à leur **moyenne historique sur 5 ans**.
+Ce scanner isole les **plus grosses entreprises américaines** (selon votre choix) et compare leur prix actuel à leur **moyenne historique sur 5 ans**.
 * **Bleu/Vert** = Sous-évalué (Opportunité ?)
 * **Gris/Jaune** = Prix normal
 * **Rouge/Violet** = Surévalué (Risque ?)
 """)
 
-# --- 2. RÉCUPÉRATION ET FILTRAGE DU TOP 150 ---
+# --- 2. RÉCUPÉRATION ET FILTRAGE DYNAMIQUE ---
 
 @st.cache_data(ttl=3600*24)
-def get_sp150_tickers():
+def get_top_sp500_tickers(limit):
     """
     1. Récupère les 500 tickers du S&P.
-    2. Récupère rapidement leur Market Cap.
-    3. Garde les 150 plus gros.
+    2. Trie par Market Cap.
+    3. Garde uniquement les 'limit' premiers (ex: Top 50, Top 200...).
     """
     headers = {"User-Agent": "Mozilla/5.0"}
     status = st.empty()
@@ -39,23 +39,16 @@ def get_sp150_tickers():
         tickers = [t.replace('.', '-') for t in tickers] # Correction BRK.B
         
         # 2. Tri par Market Cap (Utilisation de fast_info pour la vitesse)
-        status.text(f"⚡ Tri des 150 plus grosses capitalisations parmi {len(tickers)} actions...")
+        status.text(f"⚡ Tri des {limit} plus grosses capitalisations parmi {len(tickers)} actions...")
         
         market_caps = {}
         
-        # On utilise des batchs pour ne pas surcharger
-        # Note : On ne peut pas faire batch complet sur fast_info facilement sans itérer, 
-        # mais c'est très rapide (quelques ms par ticker).
-        
-        # Pour aller vite, on prend un échantillon ou on le fait brute force optimisé
-        # Ici méthode robuste :
+        # On procède par petits paquets pour ne pas bloquer
         batch_size = 50
         for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i+batch_size]
-            # yfinance permet d'accéder à fast_info sans télécharger tout l'historique
             for t in batch:
                 try:
-                    # On crée l'objet Ticker sans télécharger les data
                     info = yf.Ticker(t).fast_info
                     mcap = info['market_cap']
                     if mcap:
@@ -63,14 +56,14 @@ def get_sp150_tickers():
                 except:
                     continue
         
-        # Tri décroissant et coupe à 150
-        sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:150]
+        # Tri décroissant et coupe selon la limite choisie par l'utilisateur
+        sorted_tickers = sorted(market_caps, key=market_caps.get, reverse=True)[:limit]
         
         status.empty()
         return sorted_tickers
 
     except Exception as e:
-        st.error(f"Erreur récupération Top 150 : {e}")
+        st.error(f"Erreur récupération S&P : {e}")
         return ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"] # Fallback
 
 # --- 3. ANALYSE PROFONDE (HISTORIQUE P/E) ---
@@ -145,7 +138,6 @@ def run_analysis(tickers_list):
         if res:
             data.append(res)
         
-        # Petite pause pour éviter le blocage Yahoo
         time.sleep(0.05) 
         progress_bar.progress((i + 1) / total)
     
@@ -155,13 +147,26 @@ def run_analysis(tickers_list):
 
 # --- 4. INTERFACE ---
 
-if st.button('🚀 Lancer le Scan (Top 150 S&P)', type="primary"):
+# Zone de paramétrage
+col_config1, col_config2 = st.columns([1, 2])
+
+with col_config1:
+    # LE SLIDER MAGIQUE EST ICI
+    nb_stocks = st.slider("Nombre d'actions à analyser (Top Market Cap)", min_value=10, max_value=500, value=150, step=10)
+    st.caption(f"Le scan analysera les {nb_stocks} plus grosses entreprises du S&P 500.")
+
+with col_config2:
+    st.write(" ") # Espace pour aligner
+    st.write(" ")
+    start_button = st.button(f'🚀 Lancer l\'analyse sur le TOP {nb_stocks}', type="primary")
+
+if start_button:
     
-    # 1. On récupère les 150 plus gros
-    top_tickers = get_sp150_tickers()
-    st.success(f"Liste établie : {len(top_tickers)} plus grosses entreprises identifiées.")
+    # 1. On récupère le nombre exact demandé
+    top_tickers = get_top_sp500_tickers(limit=nb_stocks)
+    st.success(f"Cible verrouillée : Les {len(top_tickers)} plus grosses capitalisations.")
     
-    # 2. On lance l'analyse lourde
+    # 2. On lance l'analyse
     df = run_analysis(top_tickers)
     
     if not df.empty:
@@ -173,36 +178,22 @@ if st.button('🚀 Lancer le Scan (Top 150 S&P)', type="primary"):
         col2.metric("Niveau Médian du Marché", f"{med:+.1f}%", 
                     delta="Sous-évalué" if med < 0 else "Surévalué", delta_color="inverse")
 
-        # --- TREEMAP CONFIGURATION (Celle que tu voulais) ---
+        # --- TREEMAP CONFIGURATION ---
         
-        # Échelle à 10 couleurs distinctes pour bien discriminer les zones
-        # Du "Froid/Pas cher" (Bleu) vers le "Brûlant/Cher" (Rouge/Violet)
         custom_scale = [
-            "#00008B", # 1. Bleu Nuit   (-80%) : Opportunité extrême
-            "#0000FF", # 2. Bleu        (-60%) : Très sous-évalué
-            "#00BFFF", # 3. Cyan        (-40%) : Sous-évalué
-            "#2E8B57", # 4. Vert Mer    (-20%) : Bon prix
-            "#32CD32", # 5. Vert Lime   ( -5%) : Légère décote
-            "#FFFF00", # 6. Jaune       ( +5%) : Prix Juste / Légère prime
-            "#FFD700", # 7. Or          (+20%) : Commence à être cher
-            "#FF8C00", # 8. Orange Foncé(+40%) : Cher
-            "#FF0000", # 9. Rouge       (+60%) : Très cher
-            "#800080"  # 10. Violet     (+80%) : Bulle spéculative
+            "#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", 
+            "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"
         ]
 
-        st.subheader("🗺️ Carte Thermique de Valorisation (10 Niveaux)")
-        st.caption("Échelle : Bleu (Pas cher) ➔ Vert ➔ Jaune ➔ Rouge (Très cher)")
-
+        st.subheader(f"🗺️ Carte Thermique : Top {nb_stocks} S&P 500")
+        
         fig = px.treemap(
             df,
-            path=[px.Constant("S&P 500 Top 150"), 'Sector', 'Ticker'],
+            path=[px.Constant(f"S&P 500 (Top {nb_stocks})"), 'Sector', 'Ticker'],
             values='Market Cap',
             color='Premium/Discount',
-            
-            # Application de l'échelle à 10 couleurs
             color_continuous_scale=custom_scale,
             range_color=[-80, 80],
-            
             hover_data={
                 'Premium/Discount': ':.1f%',
                 'Forward P/E': ':.1f',
@@ -213,7 +204,6 @@ if st.button('🚀 Lancer le Scan (Top 150 S&P)', type="primary"):
             }
         )
         
-        # Petite amélioration pour afficher le texte Ticker + %
         fig.update_traces(
             textinfo="label+text",
             hovertemplate="<b>%{label}</b><br>Diff Moyenne: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>"
@@ -222,10 +212,9 @@ if st.button('🚀 Lancer le Scan (Top 150 S&P)', type="primary"):
         fig.update_layout(height=800, margin=dict(t=30, l=10, r=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
         
-        # Tableau Données
+        # Tableau
         st.subheader("Données Détaillées")
         
-        # Fonction couleur tableau
         def color_val(val):
             if val < -20: return 'color: blue; font-weight: bold'
             if val < 0: return 'color: green'
@@ -246,4 +235,4 @@ if st.button('🚀 Lancer le Scan (Top 150 S&P)', type="primary"):
         )
 
     else:
-        st.error("Aucune donnée disponible. Vérifiez la connexion.")
+        st.error("Aucune donnée disponible.")
