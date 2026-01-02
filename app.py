@@ -7,11 +7,8 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-# Titre de l'onglet du navigateur
 st.set_page_config(page_title="Global Equity Scanner", layout="wide")
-
-# Titre Principal de l'Application (Sobre et Pro)
-st.title("Global Equity Valuation Screener")
+st.title("Global Equity Fundamental Scanner")
 
 # --- 2. FONCTIONS DE SCRAPING ---
 
@@ -102,7 +99,7 @@ def get_top_tickers(index_name, limit):
     status.empty()
     return sorted_tickers
 
-# --- 3. ANALYSE (SELF-REPAIR) ---
+# --- 3. ANALYSE (CALCUL STRICT) ---
 
 @st.cache_data(ttl=3600*12)
 def get_historical_valuation(ticker):
@@ -112,13 +109,40 @@ def get_historical_valuation(ticker):
         currency = info.get('currency', 'USD')
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         
-        growth = info.get('earningsGrowth', None)
+        # On ne récupère PLUS la croissance estimée. On va la calculer.
         debt_eq = info.get('debtToEquity', None)
         margins = info.get('profitMargins', None)
         
         if fwd_pe is None: return None
 
-        # --- MODULE RÉPARATION ---
+        # 1. Récupération des États Financiers pour calcul manuel
+        financials = stock.financials
+        if financials.empty: return None
+
+        # --- CALCUL STRICT DE LA CROISSANCE (NET INCOME) ---
+        real_growth = None
+        try:
+            # On cherche la ligne 'Net Income' (Résultat Net)
+            # Parfois appelée 'Net Income Common Stockholders' ou juste 'Net Income'
+            ni_row = None
+            if 'Net Income' in financials.index:
+                ni_row = financials.loc['Net Income']
+            elif 'Net Income Common Stockholders' in financials.index:
+                ni_row = financials.loc['Net Income Common Stockholders']
+            
+            # Si on a trouvé la ligne et qu'il y a au moins 2 colonnes (Cette année vs Année d'avant)
+            if ni_row is not None and len(ni_row) >= 2:
+                current_ni = ni_row.iloc[0] # Plus récent
+                prev_ni = ni_row.iloc[1]    # Précédent
+                
+                # Calcul de la variation en %
+                # On utilise abs() au dénominateur pour gérer les changements de signes (perte vers profit)
+                if prev_ni and prev_ni != 0:
+                    real_growth = (current_ni - prev_ni) / abs(prev_ni)
+        except:
+            real_growth = None
+        
+        # --- RÉPARATION DETTE ---
         if debt_eq is None:
             try:
                 bs = stock.balance_sheet
@@ -128,19 +152,7 @@ def get_historical_valuation(ticker):
                     debt_eq = (total_debt / total_equity) * 100
             except: pass 
 
-        if growth is None:
-            try:
-                inc = stock.financials
-                if 'Net Income' in inc.index and len(inc.columns) >= 2:
-                    current_ni = inc.loc['Net Income'].iloc[0]
-                    prev_ni = inc.loc['Net Income'].iloc[1]
-                    if prev_ni and prev_ni != 0:
-                        growth_repair = (current_ni - prev_ni) / abs(prev_ni)
-                        growth = growth_repair 
-            except: pass
-
-        financials = stock.financials
-        if financials.empty: return None
+        # --- HISTORIQUE P/E ---
         eps_data = financials.T 
         eps_cols = [c for c in eps_data.columns if 'EPS' in str(c) or 'Earnings' in str(c)]
         if not eps_cols: return None
@@ -164,7 +176,8 @@ def get_historical_valuation(ticker):
         
         valuation_diff = (fwd_pe - avg_hist_pe) / avg_hist_pe
         
-        growth_percent = growth * 100 if growth is not None else None
+        # Formatage
+        growth_percent = real_growth * 100 if real_growth is not None else None
         margins_percent = margins * 100 if margins is not None else None
 
         return {
@@ -271,7 +284,8 @@ if 'data' in st.session_state:
             df_show = df
 
         df_chart = df_show.dropna(subset=['Growth %', 'Forward P/E'])
-        df_chart = df_chart[(df_chart['Growth %'] > -100) & (df_chart['Growth %'] < 200)]
+        # On élargit les bornes car la croissance réelle peut être plus volatile que les estimations
+        df_chart = df_chart[(df_chart['Growth %'] > -100) & (df_chart['Growth %'] < 300)]
         df_chart = df_chart[df_chart['Forward P/E'] < 100]
 
         if not df_chart.empty:
@@ -287,10 +301,11 @@ if 'data' in st.session_state:
                 hover_name="Name", 
                 trendline="ols", 
                 trendline_color_override="red",
-                title=f"Prix vs Croissance : {selected_sector}"
+                title=f"Prix vs Croissance Réelle (12M) : {selected_sector}"
             )
             fig_scatter.update_traces(textposition='top center')
-            fig_scatter.update_layout(height=650, xaxis_title="Croissance (Est. ou Hist.) %", yaxis_title="Forward P/E (Prix)")
+            # TITRE DE L'AXE MIS À JOUR (PRO)
+            fig_scatter.update_layout(height=650, xaxis_title="Croissance Réelle des Bénéfices (YoY) %", yaxis_title="Forward P/E (Prix)")
             st.plotly_chart(fig_scatter, use_container_width=True)
         else:
             st.warning("Pas assez de données pour ce secteur.")
