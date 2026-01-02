@@ -7,14 +7,14 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V17.3", layout="wide")
+st.set_page_config(page_title="Global Screener V17.2", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V17.3 - PEG Débloqué)")
+st.title("🌍 Ultimate Global Screener (V17.2 - PEG Calculé)")
 st.markdown("""
 **Analyse 360° : Valorisation + Croissance + Santé Financière**
 * **Onglet 1** : Historique (Value).
 * **Onglet 2** : Croissance (Growth).
-* **Tableau** : PEG Ratio (Inclus les croissances négatives).
+* **Tableau** : PEG Ratio (Calculé dynamiquement si manquant).
 """)
 
 # --- 2. FONCTIONS DE SCRAPING ---
@@ -104,7 +104,7 @@ def get_top_tickers(index_name, limit):
     status.empty()
     return sorted_tickers
 
-# --- 3. ANALYSE PROFONDE ---
+# --- 3. ANALYSE PROFONDE (AVEC CALCUL PEG MANUEL) ---
 
 @st.cache_data(ttl=3600*12)
 def get_historical_valuation(ticker):
@@ -114,7 +114,7 @@ def get_historical_valuation(ticker):
         currency = info.get('currency', 'USD')
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         
-        # --- INDICATEURS ---
+        # Indicateurs
         growth = info.get('earningsGrowth', None)
         peg = info.get('pegRatio', None)
         debt_eq = info.get('debtToEquity', None)
@@ -122,9 +122,11 @@ def get_historical_valuation(ticker):
         
         if fwd_pe is None: return None
         
-        # --- CORRECTION V17.3 : CALCUL PEG MÊME SI CROISSANCE NÉGATIVE ---
-        # On vérifie juste que growth n'est pas zéro (division par zéro impossible)
-        if peg is None and fwd_pe is not None and growth is not None and growth != 0:
+        # --- CALCUL DE SECOURS DU PEG ---
+        # Si Yahoo ne donne pas le PEG, mais qu'on a le PE et la Croissance, on le calcule.
+        if peg is None and fwd_pe is not None and growth is not None and growth > 0:
+            # Formule : PEG = PE / (Growth * 100)
+            # Ex: PE 20 / (0.10 * 100) = 20 / 10 = 2.0
             peg = fwd_pe / (growth * 100)
 
         financials = stock.financials
@@ -273,7 +275,7 @@ if 'data' in st.session_state:
 
     st.divider()
     st.subheader("Données Détaillées & Indicateurs de Risque")
-    st.caption("• **PEG** < 1 : Bon marché | **Négatif** : Croissance en baisse (Danger) | • **Debt/Eq** > 200 : Endetté")
+    st.caption("• **PEG** < 1 : Très bon marché / > 2 : Cher | • **Debt/Eq** > 200 : Endetté | • **Margins** < 5% : Faible rentabilité")
     
     cur = "$"
     if "France" in current_idx or "Allemagne" in current_idx: cur = "€"
@@ -282,7 +284,6 @@ if 'data' in st.session_state:
     elif "Canada" in current_idx: cur = "C$ "
     elif "Inde" in current_idx: cur = "₹ "
 
-    # Fonction couleurs
     def color_premium(v):
         if pd.isna(v): return ''
         if v < -20: return 'color: blue; font-weight: bold'
@@ -293,7 +294,6 @@ if 'data' in st.session_state:
     
     def color_peg(v):
         if pd.isna(v): return ''
-        if v < 0: return 'color: darkred; font-weight: bold' # Croissance Négative
         if v < 1: return 'color: green; font-weight: bold'
         if v > 2.5: return 'color: red'
         return ''
