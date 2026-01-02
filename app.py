@@ -7,13 +7,9 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V20", layout="wide")
+st.set_page_config(page_title="Global Screener V20.1", layout="wide")
 
 st.title("🌍 Ultimate Global Screener (V20 - IBEX 35 Added)")
-st.markdown("""
-**Fiabilité Maximale : Calcul manuel des données manquantes**
-* Si Yahoo ne donne pas la Dette ou la Croissance, le script les recalcule à partir des bilans comptables bruts.
-""")
 
 # --- 2. FONCTIONS DE SCRAPING ---
 
@@ -43,7 +39,6 @@ def get_tickers_from_wikipedia(url, index_suffix=""):
                         if ".TO" in t: found_tickers.append(t)
                         else: found_tickers.append(t)
                     else:
-                        # On évite de doubler le suffixe si wikipedia l'a déjà
                         if index_suffix and not t.endswith(index_suffix):
                             t = f"{t}{index_suffix}"
                         found_tickers.append(t)
@@ -76,7 +71,7 @@ def get_top_tickers(index_name, limit):
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/CAC_40", ".PA")
     elif index_name == "DAX 40 (Allemagne)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/DAX", ".DE")
-    elif index_name == "IBEX 35 (Espagne)":  # <--- AJOUT ICI
+    elif index_name == "IBEX 35 (Espagne)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/IBEX_35", ".MC")
     elif index_name == "FTSE 100 (UK)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/FTSE_100_Index", ".L")
@@ -105,7 +100,7 @@ def get_top_tickers(index_name, limit):
     status.empty()
     return sorted_tickers
 
-# --- 3. ANALYSE AVEC "SELF-REPAIR" ---
+# --- 3. ANALYSE (SELF-REPAIR) ---
 
 @st.cache_data(ttl=3600*12)
 def get_historical_valuation(ticker):
@@ -115,42 +110,32 @@ def get_historical_valuation(ticker):
         currency = info.get('currency', 'USD')
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         
-        # Données principales
         growth = info.get('earningsGrowth', None)
         debt_eq = info.get('debtToEquity', None)
         margins = info.get('profitMargins', None)
         
         if fwd_pe is None: return None
 
-        # --- MODULE DE RÉPARATION (SI DONNÉES MANQUANTES) ---
-        
-        # 1. Réparation Dette/Equity
+        # --- MODULE RÉPARATION ---
         if debt_eq is None:
             try:
                 bs = stock.balance_sheet
                 total_debt = bs.loc['Total Debt'].iloc[0] if 'Total Debt' in bs.index else None
                 total_equity = bs.loc['Stockholders Equity'].iloc[0] if 'Stockholders Equity' in bs.index else None
-                
                 if total_debt and total_equity and total_equity != 0:
                     debt_eq = (total_debt / total_equity) * 100
-            except:
-                pass 
+            except: pass 
 
-        # 2. Réparation Croissance (Basé sur le Net Income historique si analystes absents)
         if growth is None:
             try:
                 inc = stock.financials
                 if 'Net Income' in inc.index and len(inc.columns) >= 2:
                     current_ni = inc.loc['Net Income'].iloc[0]
                     prev_ni = inc.loc['Net Income'].iloc[1]
-                    
                     if prev_ni and prev_ni != 0:
                         growth_repair = (current_ni - prev_ni) / abs(prev_ni)
                         growth = growth_repair 
-            except:
-                pass
-
-        # --- FIN RÉPARATION ---
+            except: pass
 
         financials = stock.financials
         if financials.empty: return None
@@ -216,12 +201,12 @@ with c1:
     idx = st.selectbox("1. Indice", [
         "S&P 500 (USA)", "Nasdaq 100 (USA)", 
         "CAC 40 (France)", "DAX 40 (Allemagne)", 
-        "IBEX 35 (Espagne)", "FTSE 100 (UK)",  # <--- AJOUT ICI
+        "IBEX 35 (Espagne)", "FTSE 100 (UK)", 
         "SMI 20 (Suisse)", "TSX 60 (Canada)", "Nifty 50 (Inde)"
     ])
 with c2:
     if "SMI" in idx: max_v = 20
-    elif "IBEX" in idx: max_v = 35  # <--- AJOUT ICI
+    elif "IBEX" in idx: max_v = 35
     elif "CAC" in idx or "DAX" in idx: max_v = 40
     elif "TSX" in idx or "Nifty" in idx: max_v = 50
     elif "Nasdaq" in idx or "FTSE" in idx: max_v = 100
@@ -237,11 +222,10 @@ with c3:
 if btn:
     top = get_top_tickers(idx, nb)
     if top:
-        st.success(f"Cible : {len(top)} entreprises.")
+        # Suppression du message de succès "Cible : X entreprises"
         df_result = run_analysis(top)
         
         if not df_result.empty:
-            # Nettoyage des suffixes pour l'affichage (Ajout de .MC)
             for suffix in ['.PA', '.DE', '.L', '.TO', '.SW', '.NS', '.MC']:
                 df_result['Ticker'] = df_result['Ticker'].astype(str).str.replace(suffix, '', regex=False)
             
@@ -312,7 +296,7 @@ if 'data' in st.session_state:
 
     st.divider()
     st.subheader("Données Fondamentales & Risques")
-    st.caption("• **Debt/Eq** > 200% : Endettement élevé | **Auto-Repair** actif : Les valeurs manquantes ont été recalculées via les bilans.")
+    # Suppression de la légende explicative ici (comme demandé)
     
     cur = "$"
     if "France" in current_idx or "Allemagne" in current_idx or "Espagne" in current_idx: cur = "€"
