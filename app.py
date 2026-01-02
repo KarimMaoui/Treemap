@@ -7,17 +7,15 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V18 (Pro)", layout="wide")
+st.set_page_config(page_title="Global Screener V19", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V18 - Pro & Fiable)")
+st.title("🌍 Ultimate Global Screener (V19 - Self-Repair)")
 st.markdown("""
-**Outil d'Aide à la Décision Boursière**
-* **Onglet 1 (Value)** : Identifier les anomalies de prix par rapport à l'historique.
-* **Onglet 2 (Growth)** : Identifier les opportunités de croissance à prix raisonnable.
-* **Focus Qualité** : Dette (Risque de faillite) & Marges (Rentabilité réelle).
+**Fiabilité Maximale : Calcul manuel des données manquantes**
+* Si Yahoo ne donne pas la Dette ou la Croissance, le script les recalcule à partir des bilans comptables bruts.
 """)
 
-# --- 2. FONCTIONS DE SCRAPING (ROBUSTE) ---
+# --- 2. FONCTIONS DE SCRAPING ---
 
 def get_tickers_from_wikipedia(url, index_suffix=""):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
@@ -61,7 +59,6 @@ def get_top_tickers(index_name, limit):
     status.text(f"⏳ Récupération liste : {index_name}...")
     tickers = []
     
-    # Routage des sources
     if index_name == "S&P 500 (USA)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", "")
         tickers = [t.replace('.', '-') for t in tickers]
@@ -92,7 +89,6 @@ def get_top_tickers(index_name, limit):
     safe_limit = min(limit, len(tickers))
     batch_size = 50
     
-    # Récupération des Market Caps pour le tri
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i+batch_size]
         for t in batch:
@@ -106,7 +102,7 @@ def get_top_tickers(index_name, limit):
     status.empty()
     return sorted_tickers
 
-# --- 3. ANALYSE PROFONDE (FIABILISÉE) ---
+# --- 3. ANALYSE AVEC "SELF-REPAIR" ---
 
 @st.cache_data(ttl=3600*12)
 def get_historical_valuation(ticker):
@@ -116,15 +112,48 @@ def get_historical_valuation(ticker):
         currency = info.get('currency', 'USD')
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         
-        # --- INDICATEURS FIABLES ---
-        # On supprime le PEG. On garde la Croissance brute, la Dette et les Marges.
+        # Données principales
         growth = info.get('earningsGrowth', None)
         debt_eq = info.get('debtToEquity', None)
         margins = info.get('profitMargins', None)
         
         if fwd_pe is None: return None
+
+        # --- MODULE DE RÉPARATION (SI DONNÉES MANQUANTES) ---
         
-        # Récupération historique pour le P/E Moyen
+        # 1. Réparation Dette/Equity
+        if debt_eq is None:
+            try:
+                bs = stock.balance_sheet
+                # On cherche la dette totale et les capitaux propres
+                # Yahoo change parfois les noms des lignes, on essaie les plus courants
+                total_debt = bs.loc['Total Debt'].iloc[0] if 'Total Debt' in bs.index else None
+                total_equity = bs.loc['Stockholders Equity'].iloc[0] if 'Stockholders Equity' in bs.index else None
+                
+                if total_debt and total_equity and total_equity != 0:
+                    debt_eq = (total_debt / total_equity) * 100
+            except:
+                pass # Si échec, reste None
+
+        # 2. Réparation Croissance (Basé sur le Net Income historique si analystes absents)
+        # Attention : C'est une croissance historique, pas future, mais mieux que rien.
+        if growth is None:
+            try:
+                inc = stock.financials
+                # On compare le Net Income le plus récent avec le précédent
+                if 'Net Income' in inc.index and len(inc.columns) >= 2:
+                    current_ni = inc.loc['Net Income'].iloc[0]
+                    prev_ni = inc.loc['Net Income'].iloc[1]
+                    
+                    if prev_ni and prev_ni != 0:
+                        # Calcul variation
+                        growth_repair = (current_ni - prev_ni) / abs(prev_ni)
+                        growth = growth_repair # C'est un float ex: 0.15
+            except:
+                pass
+
+        # --- FIN RÉPARATION ---
+
         financials = stock.financials
         if financials.empty: return None
         eps_data = financials.T 
@@ -199,7 +228,7 @@ with c3:
     st.write(" ")
     btn = st.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True)
 
-# --- 5. LOGIQUE & STOCKAGE ---
+# --- 5. LOGIQUE ---
 
 if btn:
     top = get_top_tickers(idx, nb)
@@ -218,7 +247,7 @@ if btn:
     else:
         st.error("Erreur liste.")
 
-# --- 6. AFFICHAGE DES RÉSULTATS ---
+# --- 6. AFFICHAGE ---
 
 if 'data' in st.session_state:
     df = st.session_state['data']
@@ -226,25 +255,21 @@ if 'data' in st.session_state:
     
     st.divider()
     
-    tab1, tab2 = st.tabs(["🗺️ Treemap (Value)", "🚀 Growth vs Price (GARP)"])
+    tab1, tab2 = st.tabs(["🗺️ Treemap (Value)", "🚀 Growth vs P/E (GARP)"])
     
     scale = ["#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"]
     
-    # --- TAB 1 : TREEMAP (VALUE) ---
     with tab1:
-        st.subheader(f"Carte de Valorisation : {current_idx}")
-        st.caption("Couleur : Bleu = Sous-évalué vs Historique | Rouge = Surévalué vs Historique")
+        st.subheader(f"Carte Thermique : {current_idx}")
         fig_tree = px.treemap(
             df, path=[px.Constant(current_idx), 'Sector', 'Ticker'], values='Market Cap', color='Premium/Discount',
             color_continuous_scale=scale, range_color=[-80, 80],
-            # On retire le PEG du hover data
             hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'Debt/Eq':':.0f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
         )
         fig_tree.update_traces(textinfo="label+text", hovertemplate="<b>%{label}</b><br>Diff Hist: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>")
         fig_tree.update_layout(height=700, margin=dict(t=20, l=10, r=10, b=10))
         st.plotly_chart(fig_tree, use_container_width=True)
 
-    # --- TAB 2 : SCATTER PLOT (GROWTH) ---
     with tab2:
         col_sel1, col_sel2 = st.columns([1, 3])
         all_sectors = sorted(df['Sector'].unique().tolist())
@@ -255,9 +280,8 @@ if 'data' in st.session_state:
         else:
             df_show = df
 
-        # Filtre de nettoyage pour le graphique (on garde quand même les croissances négatives pour info, mais bornées)
         df_chart = df_show.dropna(subset=['Growth %', 'Forward P/E'])
-        df_chart = df_chart[(df_chart['Growth %'] > -100) & (df_chart['Growth %'] < 200)] # Bornes plus larges pour voir la réalité
+        df_chart = df_chart[(df_chart['Growth %'] > -100) & (df_chart['Growth %'] < 200)]
         df_chart = df_chart[df_chart['Forward P/E'] < 100]
 
         if not df_chart.empty:
@@ -266,7 +290,7 @@ if 'data' in st.session_state:
                 x="Growth %", 
                 y="Forward P/E", 
                 size="Market Cap", 
-                color="Premium/Discount", # On garde la couleur historique, c'est une super info croisée
+                color="Premium/Discount",
                 color_continuous_scale=scale, 
                 range_color=[-80, 80],
                 text="Ticker", 
@@ -276,17 +300,14 @@ if 'data' in st.session_state:
                 title=f"Prix vs Croissance : {selected_sector}"
             )
             fig_scatter.update_traces(textposition='top center')
-            fig_scatter.update_layout(height=650, xaxis_title="Croissance Trimestrielle (YoY) %", yaxis_title="Forward P/E (Prix)")
+            fig_scatter.update_layout(height=650, xaxis_title="Croissance (Est. ou Hist.) %", yaxis_title="Forward P/E (Prix)")
             st.plotly_chart(fig_scatter, use_container_width=True)
-            
-            st.info("💡 **Lecture :** Les actions en bas à droite (Forte Croissance, Faible P/E) sont les plus attractives statistiquement.")
         else:
             st.warning("Pas assez de données pour ce secteur.")
 
-    # --- TABLEAU FINAL (SÉCURISÉ) ---
     st.divider()
     st.subheader("Données Fondamentales & Risques")
-    st.caption("• **Debt/Eq** > 200% : Endettement élevé (Risque) | • **Margins** < 5% : Rentabilité faible")
+    st.caption("• **Debt/Eq** > 200% : Endettement élevé | **Auto-Repair** actif : Les valeurs manquantes ont été recalculées via les bilans.")
     
     cur = "$"
     if "France" in current_idx or "Allemagne" in current_idx: cur = "€"
@@ -295,7 +316,6 @@ if 'data' in st.session_state:
     elif "Canada" in current_idx: cur = "C$ "
     elif "Inde" in current_idx: cur = "₹ "
 
-    # Fonctions de couleur (Sécurité et Valuation)
     def color_premium(v):
         if pd.isna(v): return ''
         if v < -20: return 'color: blue; font-weight: bold'
@@ -305,24 +325,22 @@ if 'data' in st.session_state:
     
     def color_debt(v):
         if pd.isna(v): return ''
-        if v > 200: return 'color: red; font-weight: bold' # Alerte Dette
+        if v > 200: return 'color: red; font-weight: bold'
         if v < 50: return 'color: green'
         return ''
 
     def color_margins(v):
         if pd.isna(v): return ''
-        if v < 5: return 'color: red' # Alerte Rentabilité Faible
-        if v > 20: return 'color: green; font-weight: bold' # Cash Machine
+        if v < 5: return 'color: red'
+        if v > 20: return 'color: green; font-weight: bold'
         return ''
 
-    # Affichage avec formatage sécurisé (Lambda)
     st.dataframe(
         df.sort_values("Premium/Discount").style
         .format({
             "Market Cap": lambda x: (cur + "{:,.0f}").format(x) if pd.notnull(x) else "-", 
             "Forward P/E": lambda x: "{:.1f}".format(x) if pd.notnull(x) else "-", 
             "Avg Hist P/E": lambda x: "{:.1f}".format(x) if pd.notnull(x) else "-", 
-            # Sécurité Croissance : Si x est 0 (bug yahoo) ou vide, on met "-"
             "Growth %": lambda x: "{:+.1f}%".format(x) if (pd.notnull(x) and x != 0) else "-",
             "Debt/Eq": lambda x: "{:.0f}%".format(x) if pd.notnull(x) else "-",
             "Margins %": lambda x: "{:.1f}%".format(x) if pd.notnull(x) else "-",
