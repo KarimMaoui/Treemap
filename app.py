@@ -7,17 +7,17 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V17.3", layout="wide")
+st.set_page_config(page_title="Global Screener V18 (Pro)", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V17.3 - PEG Débloqué)")
+st.title("🌍 Ultimate Global Screener (V18 - Pro & Fiable)")
 st.markdown("""
-**Analyse 360° : Valorisation + Croissance + Santé Financière**
-* **Onglet 1** : Historique (Value).
-* **Onglet 2** : Croissance (Growth).
-* **Tableau** : PEG Ratio (Inclus les croissances négatives).
+**Outil d'Aide à la Décision Boursière**
+* **Onglet 1 (Value)** : Identifier les anomalies de prix par rapport à l'historique.
+* **Onglet 2 (Growth)** : Identifier les opportunités de croissance à prix raisonnable.
+* **Focus Qualité** : Dette (Risque de faillite) & Marges (Rentabilité réelle).
 """)
 
-# --- 2. FONCTIONS DE SCRAPING ---
+# --- 2. FONCTIONS DE SCRAPING (ROBUSTE) ---
 
 def get_tickers_from_wikipedia(url, index_suffix=""):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
@@ -61,6 +61,7 @@ def get_top_tickers(index_name, limit):
     status.text(f"⏳ Récupération liste : {index_name}...")
     tickers = []
     
+    # Routage des sources
     if index_name == "S&P 500 (USA)":
         tickers = get_tickers_from_wikipedia("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", "")
         tickers = [t.replace('.', '-') for t in tickers]
@@ -91,6 +92,7 @@ def get_top_tickers(index_name, limit):
     safe_limit = min(limit, len(tickers))
     batch_size = 50
     
+    # Récupération des Market Caps pour le tri
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i+batch_size]
         for t in batch:
@@ -104,7 +106,7 @@ def get_top_tickers(index_name, limit):
     status.empty()
     return sorted_tickers
 
-# --- 3. ANALYSE PROFONDE ---
+# --- 3. ANALYSE PROFONDE (FIABILISÉE) ---
 
 @st.cache_data(ttl=3600*12)
 def get_historical_valuation(ticker):
@@ -114,19 +116,15 @@ def get_historical_valuation(ticker):
         currency = info.get('currency', 'USD')
         fwd_pe = info.get('forwardPE', info.get('trailingPE', None))
         
-        # --- INDICATEURS ---
+        # --- INDICATEURS FIABLES ---
+        # On supprime le PEG. On garde la Croissance brute, la Dette et les Marges.
         growth = info.get('earningsGrowth', None)
-        peg = info.get('pegRatio', None)
         debt_eq = info.get('debtToEquity', None)
         margins = info.get('profitMargins', None)
         
         if fwd_pe is None: return None
         
-        # --- CORRECTION V17.3 : CALCUL PEG MÊME SI CROISSANCE NÉGATIVE ---
-        # On vérifie juste que growth n'est pas zéro (division par zéro impossible)
-        if peg is None and fwd_pe is not None and growth is not None and growth != 0:
-            peg = fwd_pe / (growth * 100)
-
+        # Récupération historique pour le P/E Moyen
         financials = stock.financials
         if financials.empty: return None
         eps_data = financials.T 
@@ -163,7 +161,6 @@ def get_historical_valuation(ticker):
             "Forward P/E": fwd_pe,
             "Avg Hist P/E": avg_hist_pe,
             "Growth %": growth_percent,
-            "PEG": peg,
             "Debt/Eq": debt_eq,
             "Margins %": margins_percent,
             "Premium/Discount": valuation_diff * 100
@@ -202,7 +199,7 @@ with c3:
     st.write(" ")
     btn = st.button("🚀 Lancer l'Analyse", type="primary", use_container_width=True)
 
-# --- 5. LOGIQUE ---
+# --- 5. LOGIQUE & STOCKAGE ---
 
 if btn:
     top = get_top_tickers(idx, nb)
@@ -221,7 +218,7 @@ if btn:
     else:
         st.error("Erreur liste.")
 
-# --- 6. AFFICHAGE ---
+# --- 6. AFFICHAGE DES RÉSULTATS ---
 
 if 'data' in st.session_state:
     df = st.session_state['data']
@@ -229,21 +226,25 @@ if 'data' in st.session_state:
     
     st.divider()
     
-    tab1, tab2 = st.tabs(["🗺️ Treemap (Value)", "🚀 Growth vs P/E (GARP)"])
+    tab1, tab2 = st.tabs(["🗺️ Treemap (Value)", "🚀 Growth vs Price (GARP)"])
     
     scale = ["#00008B", "#0000FF", "#00BFFF", "#2E8B57", "#32CD32", "#FFFF00", "#FFD700", "#FF8C00", "#FF0000", "#800080"]
     
+    # --- TAB 1 : TREEMAP (VALUE) ---
     with tab1:
-        st.subheader(f"Carte Thermique : {current_idx}")
+        st.subheader(f"Carte de Valorisation : {current_idx}")
+        st.caption("Couleur : Bleu = Sous-évalué vs Historique | Rouge = Surévalué vs Historique")
         fig_tree = px.treemap(
             df, path=[px.Constant(current_idx), 'Sector', 'Ticker'], values='Market Cap', color='Premium/Discount',
             color_continuous_scale=scale, range_color=[-80, 80],
-            hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'PEG':':.2f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
+            # On retire le PEG du hover data
+            hover_data={'Premium/Discount':':.1f%', 'Forward P/E':':.1f', 'Avg Hist P/E':':.1f', 'Debt/Eq':':.0f', 'Market Cap':False, 'Sector':False, 'Ticker':False}
         )
-        fig_tree.update_traces(textinfo="label+text", hovertemplate="<b>%{label}</b><br>Diff: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>")
+        fig_tree.update_traces(textinfo="label+text", hovertemplate="<b>%{label}</b><br>Diff Hist: %{color:.1f}%<br>Fwd P/E: %{customdata[1]}<extra></extra>")
         fig_tree.update_layout(height=700, margin=dict(t=20, l=10, r=10, b=10))
         st.plotly_chart(fig_tree, use_container_width=True)
 
+    # --- TAB 2 : SCATTER PLOT (GROWTH) ---
     with tab2:
         col_sel1, col_sel2 = st.columns([1, 3])
         all_sectors = sorted(df['Sector'].unique().tolist())
@@ -254,26 +255,38 @@ if 'data' in st.session_state:
         else:
             df_show = df
 
+        # Filtre de nettoyage pour le graphique (on garde quand même les croissances négatives pour info, mais bornées)
         df_chart = df_show.dropna(subset=['Growth %', 'Forward P/E'])
-        df_chart = df_chart[(df_chart['Growth %'] > -50) & (df_chart['Growth %'] < 100)]
+        df_chart = df_chart[(df_chart['Growth %'] > -100) & (df_chart['Growth %'] < 200)] # Bornes plus larges pour voir la réalité
         df_chart = df_chart[df_chart['Forward P/E'] < 100]
 
         if not df_chart.empty:
             fig_scatter = px.scatter(
-                df_chart, x="Growth %", y="Forward P/E", size="Market Cap", 
-                color="Premium/Discount", color_continuous_scale=scale, range_color=[-80, 80],
-                text="Ticker", hover_name="Name", trendline="ols", trendline_color_override="red",
-                title=f"P/E vs Croissance : {selected_sector}"
+                df_chart, 
+                x="Growth %", 
+                y="Forward P/E", 
+                size="Market Cap", 
+                color="Premium/Discount", # On garde la couleur historique, c'est une super info croisée
+                color_continuous_scale=scale, 
+                range_color=[-80, 80],
+                text="Ticker", 
+                hover_name="Name", 
+                trendline="ols", 
+                trendline_color_override="red",
+                title=f"Prix vs Croissance : {selected_sector}"
             )
             fig_scatter.update_traces(textposition='top center')
-            fig_scatter.update_layout(height=650, xaxis_title="Croissance Estimée (%)", yaxis_title="Forward P/E")
+            fig_scatter.update_layout(height=650, xaxis_title="Croissance Trimestrielle (YoY) %", yaxis_title="Forward P/E (Prix)")
             st.plotly_chart(fig_scatter, use_container_width=True)
+            
+            st.info("💡 **Lecture :** Les actions en bas à droite (Forte Croissance, Faible P/E) sont les plus attractives statistiquement.")
         else:
-            st.warning("Pas assez de données de croissance.")
+            st.warning("Pas assez de données pour ce secteur.")
 
+    # --- TABLEAU FINAL (SÉCURISÉ) ---
     st.divider()
-    st.subheader("Données Détaillées & Indicateurs de Risque")
-    st.caption("• **PEG** < 1 : Bon marché | **Négatif** : Croissance en baisse (Danger) | • **Debt/Eq** > 200 : Endetté")
+    st.subheader("Données Fondamentales & Risques")
+    st.caption("• **Debt/Eq** > 200% : Endettement élevé (Risque) | • **Margins** < 5% : Rentabilité faible")
     
     cur = "$"
     if "France" in current_idx or "Allemagne" in current_idx: cur = "€"
@@ -282,42 +295,41 @@ if 'data' in st.session_state:
     elif "Canada" in current_idx: cur = "C$ "
     elif "Inde" in current_idx: cur = "₹ "
 
-    # Fonction couleurs
+    # Fonctions de couleur (Sécurité et Valuation)
     def color_premium(v):
         if pd.isna(v): return ''
         if v < -20: return 'color: blue; font-weight: bold'
         if v < 0: return 'color: green'
         if v > 40: return 'color: red; font-weight: bold'
-        if v > 0: return 'color: orange'
-        return 'color: black'
-    
-    def color_peg(v):
-        if pd.isna(v): return ''
-        if v < 0: return 'color: darkred; font-weight: bold' # Croissance Négative
-        if v < 1: return 'color: green; font-weight: bold'
-        if v > 2.5: return 'color: red'
         return ''
-
+    
     def color_debt(v):
         if pd.isna(v): return ''
-        if v > 200: return 'color: red; font-weight: bold'
+        if v > 200: return 'color: red; font-weight: bold' # Alerte Dette
         if v < 50: return 'color: green'
         return ''
 
+    def color_margins(v):
+        if pd.isna(v): return ''
+        if v < 5: return 'color: red' # Alerte Rentabilité Faible
+        if v > 20: return 'color: green; font-weight: bold' # Cash Machine
+        return ''
+
+    # Affichage avec formatage sécurisé (Lambda)
     st.dataframe(
         df.sort_values("Premium/Discount").style
         .format({
             "Market Cap": lambda x: (cur + "{:,.0f}").format(x) if pd.notnull(x) else "-", 
             "Forward P/E": lambda x: "{:.1f}".format(x) if pd.notnull(x) else "-", 
             "Avg Hist P/E": lambda x: "{:.1f}".format(x) if pd.notnull(x) else "-", 
-            "Growth %": lambda x: "{:+.1f}%".format(x) if pd.notnull(x) else "-",
-            "PEG": lambda x: "{:.2f}".format(x) if pd.notnull(x) else "-",
+            # Sécurité Croissance : Si x est 0 (bug yahoo) ou vide, on met "-"
+            "Growth %": lambda x: "{:+.1f}%".format(x) if (pd.notnull(x) and x != 0) else "-",
             "Debt/Eq": lambda x: "{:.0f}%".format(x) if pd.notnull(x) else "-",
             "Margins %": lambda x: "{:.1f}%".format(x) if pd.notnull(x) else "-",
             "Premium/Discount": lambda x: "{:+.1f}%".format(x) if pd.notnull(x) else "-"
         })
         .map(color_premium, subset=['Premium/Discount'])
-        .map(color_peg, subset=['PEG'])
-        .map(color_debt, subset=['Debt/Eq']),
+        .map(color_debt, subset=['Debt/Eq'])
+        .map(color_margins, subset=['Margins %']),
         use_container_width=True
     )
