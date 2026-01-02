@@ -7,9 +7,11 @@ import requests
 from io import StringIO
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Global Screener V20.1", layout="wide")
+# Titre de l'onglet du navigateur
+st.set_page_config(page_title="Global Equity Scanner", layout="wide")
 
-st.title("🌍 Ultimate Global Screener (V20 - IBEX 35 Added)")
+# Titre Principal de l'Application (Sobre et Pro)
+st.title("Global Equity Valuation Screener")
 
 # --- 2. FONCTIONS DE SCRAPING ---
 
@@ -222,7 +224,6 @@ with c3:
 if btn:
     top = get_top_tickers(idx, nb)
     if top:
-        # Suppression du message de succès "Cible : X entreprises"
         df_result = run_analysis(top)
         
         if not df_result.empty:
@@ -296,7 +297,6 @@ if 'data' in st.session_state:
 
     st.divider()
     st.subheader("Données Fondamentales & Risques")
-    # Suppression de la légende explicative ici (comme demandé)
     
     cur = "$"
     if "France" in current_idx or "Allemagne" in current_idx or "Espagne" in current_idx: cur = "€"
